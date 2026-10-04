@@ -61,3 +61,9 @@ premium/
   tests/                  unit tests (hand-checked values)
   data/                   snapshot DB + outputs (git-ignored)
 ```
+
+## S3 data check (2026-10-04)
+- **Groww's public instrument list** (`growwapi-assets.groww.in/instruments/instrument.csv`, no token) lists **MCX commodity futures**: 15,118 MCX rows, including crude oil, gold, silver, copper, natural gas, aluminium and zinc. It includes **mini lots** that suit ₹2 lakh: CRUDEOILM 10 bbl, GOLDM, SILVERM, NATGASMINI. It also lists NSE index futures (Nifty lot 65, Bank Nifty lot 30). There are no currency futures.
+- The SDK supports `EXCHANGE_MCX` + `SEGMENT_COMMODITY` in `get_historical_candles` / `get_expiries`.
+- **Open:** whether history for **expired** futures is served, and how far back (trend-following needs years). `scripts/probe_commodities.py` checks this with today's token (read-only calls only).
+- **Token source:** the probe reads the token from the environment or, read-only, from the Nifty system's `.env` (where the morning window stores it). It never prints it, and never writes to the Nifty system.
