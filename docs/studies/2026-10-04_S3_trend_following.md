@@ -53,3 +53,31 @@
 - Otherwise → failed, with the reason.
 
 **Owner caveat (fixed now):** with ₹2 lakh, one Nifty futures lot (≈ ₹15 lakh notional) is far above a 10%-volatility position. Real trading might need MCX **mini** contracts, larger capital or ETFs. The study reports the minimum capital that lets each market be sized correctly.
+
+## Implementation notes (committed with the code, 2026-10-04, BEFORE any result was run)
+
+Data was downloaded and quality-checked (no strategy output had been seen). These choices follow from that check, and from details the declaration left open:
+
+1. **Roll filter.** Yahoo does not say when the front-month contract changes, so the declared filter can't be applied exactly.
+   - Variant **z5**: any day with |return| > 5 × the prior 60-day stdev is set to 0. This is a superset of the declared filter; it also removes some genuine shocks.
+   - Variant **raw**: no filter.
+   - **A rule must pass in BOTH variants.** Flagged-day counts are reported.
+2. **Crude oil went to −$37.63 on 2020-04-20.** Percentage returns are undefined around non-positive prices, so the 2020-04-20 and 04-21 returns are set to 0. MCX longs really lost that day; a trend follower was short going in, so zero is conservative.
+3. **Yahoo high/low** sometimes exclude the close (settlement prices; ~200–300 bars each in GC, SI, HG and INR). High and low are clamped to contain the open and close (affects ATR only).
+4. **Indices before futures data:** Yahoo spot ^NSEI/^NSEBANK minus **5.5%/yr carry** (futures ≈ spot − (risk-free − dividend)), with the same roll costs. Index data starts 2007-09-17; the indices join once warmed up (≥ 260 days).
+5. **P-recent index source.**
+   - The declared source is Groww futures.
+   - The Groww token in the Nifty system's `.env` was expired on 2026-10-04, so a **provisional** run uses Yahoo spot minus carry (`--index yahoo`).
+   - The **official** P-recent verdict for the indices is the `--index groww` run, made once a valid token is available. Its continuous series rolls 3 trading days before expiry, back-adjusted by ratio.
+   - Rules and parameters are identical in both runs.
+6. **Commodities in ₹:** daily r_INR = (1 + r_USD)(1 + r_USDINR) − 1, with USDINR forward-filled to the commodity's dates.
+7. **Execution:** direction decided at close t, traded at close t+1, so the position earns from t+2. On a stop, the position stays flat until a *fresh* signal (T1: a new 55-day breakout; T2: a new SMA cross). T2 takes the prevailing trend on its first warm day.
+8. **Sizing:** weight = direction × min(0.10/σ60_annual, 2) / N, where N = markets warmed up that day. This is the literal "10% per market, equal risk split", so portfolio volatility will be below 10%; realised average gross exposure is reported.
+9. **Costs, per side, as a fraction of notional:**
+   - index futures **0.035%** (STT 0.02% sell + exchange + stamp + GST + ₹20 brokerage + 0.02% slippage, averaged across sides);
+   - commodities **0.06%** (CTT 0.01% sell + MCX charges + ₹20 brokerage on mini-lot notional + 0.03% slippage);
+   - plus a roll round trip on each market's first trading day of every month.
+10. **Scorecard:** daily P&L = portfolio return × ₹2,00,000, with no compounding (the premium scorecard).
+    - "Positive in ≥ 60% of markets" = each market run alone, total return in the period > 0.
+    - "Without its best market" = the portfolio rerun without the best standalone market, total > 0.
+    - **Crisis months** = Nifty's 5 worst months in each period, showing the strategy's return in those months.
