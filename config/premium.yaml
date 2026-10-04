@@ -1,0 +1,11 @@
+# premium: defaults (owner to confirm before any paper trading). All limits are percentages.
+capital_inr: 200000
+risk:
+  max_loss_per_position_pct_equity: 2.0     # defined-risk: max loss known at entry
+  max_open_risk_pct_equity: 6.0             # sum of open positions' max losses
+  monthly_pause_pct: 6.0                    # no new positions after a −6% month (start-of-month equity)
+  kill_from_peak_pct: 15.0                  # stop everything for an owner review
+data:
+  source_db: ../suzlon/data/market.duckdb   # read ONLY by scripts/snapshot.ps1 (copy), never opened by premium code
+  snapshot_db: data/market.duckdb           # premium reads only this copy
+benchmark: NSE-NIFTY
