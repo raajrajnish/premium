@@ -52,3 +52,22 @@
 **Outcome:**
 - ROBUST → a **paper-trading candidate** in premium (live paper engine to be built), with the owner's approval and confirmed risk limits.
 - Otherwise → recorded as failed, with the reason.
+
+## Result (run 2026-10-04 13:30, `data/results/s1_20261004_1330`; code committed before the run): NONE PASS
+
+| | Coverage | H-A (Dec 2023 – Jun 2025) | H-B (Jul 2025 – Sep 2026) | 95% CI (₹/position) | Without top 5 |
+|---|---|---|---|---|---|
+| **S1a** iron fly 13:30 expiry | 99% (147) | **+₹221**/pos, PF 1.26, win 66%, **−₹110 at 2× costs** → FAIL | **−₹306**, PF 0.75 → FAIL | [−502, +445] | −₹165 |
+| **S1b** 0-DTE condor 09:30 | 92% (136) | −₹526, PF 0.61, max DD −22% → FAIL | +₹81, PF 1.20, −₹241 at 2× costs → FAIL | [−752, +201] | −₹410 |
+| **S1c** 1-DTE condor overnight | 70% (104) | −₹170, PF 0.87 → FAIL | −₹228, PF 0.80 → FAIL | [−990, +475] | −₹427 |
+
+**Risk profile, as designed:** losses were capped at about ₹9–15k per position, and the worst trade was −6% to −7% of ₹2 lakh. Realised losses slightly exceed the stated max loss because charges and spreads come on top. Win rates are 58–82%, but the average loss is 5–10× the average win.
+
+**Benchmark:** Nifty buy-and-hold over the same dates had CAGR **4.0%**, max DD −15.7%, worst month −11.1%.
+
+**Coverage bias:** skipped days had *smaller* moves (S1c: 0.51% vs 0.63%), so the skips did not flatter the results.
+
+**Reading:**
+1. **The wings eat the premium.** R6 (naked straddle, unlimited risk) made about +₹237/position over the same days. Buying protection at ±1% plus 8 orders of charges (≈ ₹250–350 per position) turns the iron fly into −₹40 overall, and negative at 2× costs in both halves.
+2. **The edge is too thin for the risk:** about +₹200 average against about ₹12,000 of capped risk per position. A single max-loss day (2024-02-22, 2024-09-12, 2025-08-07) wipes out 30–60 winning positions.
+3. **Verdict: S1 failed.** Weekly defined-risk Nifty selling, in these three forms, does not earn a premium after costs in 2023–26. It is not a paper candidate.
