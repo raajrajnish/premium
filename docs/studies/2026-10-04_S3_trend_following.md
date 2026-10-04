@@ -81,3 +81,30 @@ Data was downloaded and quality-checked (no strategy output had been seen). Thes
     - "Positive in ≥ 60% of markets" = each market run alone, total return in the period > 0.
     - "Without its best market" = the portfolio rerun without the best standalone market, total > 0.
     - **Crisis months** = Nifty's 5 worst months in each period, showing the strategy's return in those months.
+
+## Result (run 2026-10-04 13:53, `data/results/s3_yahoo_20261004_1353`; code committed before the run as `8cd3b87`): NONE PASS
+
+Indices use Yahoo spot minus carry (the provisional source); commodities come from Yahoo, converted to ₹. Costs are 1×, with CAGR at 2× costs alongside.
+
+| Variant | Rule | P-old (2007–2020): CAGR / max DD / Calmar / Sharpe | P-recent (2021–Sep 2026): CAGR / max DD / Calmar / Sharpe | Markets positive (old / recent) |
+|---|---|---|---|---|
+| z5 | **T1** Donchian 55/20 | +0.7% / −13.2% / 0.05 / 0.22 | +0.2% / −12.2% / 0.01 / 0.06 (−0.5% at 2×) | 71% / 57% |
+| z5 | **T2** SMA 50/200 | −0.1% / −16.6% / — / −0.01 | +2.1% / −10.7% / 0.20 / **0.67** | 43% / 57% |
+| z5 | **T3** 12-month TSMOM | +0.2% / −18.8% / 0.01 / 0.06 | +2.5% / −11.3% / 0.22 / 0.54 | 43% / 71% |
+| raw | T1 | +1.0% / −11.1% / 0.09 / 0.28 | −0.9% / −14.1% / — / −0.22 | 71% / 14% |
+| raw | T2 | −0.2% / −15.5% / — / −0.04 | +1.4% / −9.7% / 0.15 / 0.45 | 43% / 71% |
+| raw | T3 | −1.4% / −27.2% / — / −0.25 | +0.2% / −14.2% / 0.01 / 0.07 | 29% / 57% |
+
+**Benchmark:** Nifty buy-and-hold had CAGR **8.9%** (max DD −59.9%) in P-old and **8.7%** (max DD −17.2%) in P-recent.
+
+**Verdict: S3 failed.**
+1. **No rule passes P-old in either variant.** Every Calmar there is ≤ 0.09 and every Sharpe ≤ 0.28. A ROBUST pass needs both periods, so the official Groww-futures run for the P-recent indices **cannot change the verdict** and is not needed.
+2. **Two P-recent leads** (T2 and T3 with z5) have positive returns and Sharpe 0.54–0.67, but fail Calmar (0.20–0.22 against the 0.3 bar). Their returns come mostly from **gold**: without it, T2 makes +6% and T3 +5% total over 5.7 years. Gold's 2022–26 bull run is one trend, not a repeatable edge.
+3. **By market:**
+   - **Gold** is the only market positive in all 12 rule/period/variant cells.
+   - **Bank Nifty and natural gas** lose in almost every cell; Nifty is mixed. Indian index trends are too choppy for these rules after costs, which is consistent with the Nifty system's failed breakout ideas.
+4. **What did work, as theory predicts:** the crisis behaviour. In Nifty's worst months (2008-10 −26%, 2008-06, 2008-01) every rule was **positive** (+0.2% to +2.8%), and monthly correlation with Nifty was about 0. In 2020-03 it was mixed (−1.7% to +2.1%). So trend-following is a hedge but, on this universe, **not a profit source**.
+5. **Caveats (they do not rescue it):**
+   - Sizing was the literal 10%/N, so average gross exposure was only 0.2–0.5× capital. Sharpe and Calmar barely depend on scale, and those are what failed.
+   - The `entries` column in `scorecards.csv` is the whole-history count, not per period (a reporting slip with no effect on the pass/fail metrics).
+   - With 7 markets this is far narrower than the 50–60 markets in the published evidence. The literature's edge comes from breadth that ₹2 lakh can't buy on MCX/NSE.

@@ -38,9 +38,9 @@ Find trading approaches that earn a **steady premium with controlled, known-in-a
 
 | # | Approach | Data | Status |
 |---|---|---|---|
-| **S1** | **Defined-risk option selling on Nifty** (credit spreads / iron condors, weekly) | Nifty options in the snapshot (≈ ±3% of spot; far wings sometimes missing; see S1 for handling) | next |
+| **S1** | **Defined-risk option selling on Nifty** (credit spreads / iron condors, weekly) | Nifty options in the snapshot (≈ ±3% of spot; far wings sometimes missing; see S1 for handling) | **FAILED** 2026-10-04 |
 | S2 | **Covered calls** on Nifty (index proxy) / large stocks | snapshot (index, options, Nifty 50 daily) | planned |
-| S3 | **Trend-following on futures** (Nifty/Bank Nifty futures; MCX gold/silver/crude if available) | needs futures/commodity history: check Groww first | planned |
+| S3 | **Trend-following on futures** (Nifty/Bank Nifty futures; MCX gold/silver/crude if available) | Groww NSE futures 2021→; Yahoo global futures × USDINR as the MCX proxy | **FAILED** 2026-10-04 (provisional data; verdict final, see study) |
 | S4 | **Monthly factor investing** (momentum / quality / low-volatility) in Nifty 50 | snapshot (Nifty 50 daily) | planned |
 | (S5) | Cash-futures arbitrage (low return; for idle cash only) | futures data | maybe |
 
@@ -70,3 +70,8 @@ premium/
 - **Probe result (2026-10-04, read-only calls):**
   - **NSE index futures: history IS available.** Expired monthly Nifty and Bank Nifty futures returned about 58–64 daily candles each, for every March contract 2021–2025. A continuous back-adjusted series 2021→2026 can be built. (Note: `get_expiries` returns *option* expiries; futures use the monthly expiry. Daily requests are limited to 180 days per call.)
   - **MCX commodities: NO history via Groww's API.** Zero candles for currently listed contracts (crude, crude-mini, gold-mini) within the 180-day limit, for "continuous" symbols, and for just-expired crude. `get_expiries` also returns nothing for MCX. Commodity trend-following therefore needs **another data source**, e.g. MCX's official daily bhavcopy archive (public; not yet checked).
+- **Follow-up checks (2026-10-04):**
+  - **NSE commodity futures** (e.g. NSE-GOLD, NSE-CRUDEOIL) also returned 0 candles via Groww.
+  - **MCX's website** returns HTTP 403 to scripts. We do not circumvent it.
+  - **Yahoo Finance's public chart API** serves daily data from 2005 for gold (GC=F), silver (SI=F), crude (CL=F), copper (HG=F), natural gas (NG=F) and USD/INR (INR=X), and from 2007-09 for ^NSEI/^NSEBANK. Used as the **MCX proxy** (global price × USDINR), stored in `data/s3.duckdb` (`scripts/fetch_s3.py --step yahoo`).
+  - **Yahoo faults:** CL=F went to −37.63 on 2020-04-20; the close sometimes falls outside the day's high/low (settlement prices); the front-month roll dates are unknown. See the S3 study, implementation notes 1–3.
