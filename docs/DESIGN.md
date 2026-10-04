@@ -67,3 +67,6 @@ premium/
 - The SDK supports `EXCHANGE_MCX` + `SEGMENT_COMMODITY` in `get_historical_candles` / `get_expiries`.
 - **Open:** whether history for **expired** futures is served, and how far back (trend-following needs years). `scripts/probe_commodities.py` checks this with today's token (read-only calls only).
 - **Token source:** the probe reads the token from the environment or, read-only, from the Nifty system's `.env` (where the morning window stores it). It never prints it, and never writes to the Nifty system.
+- **Probe result (2026-10-04, read-only calls):**
+  - **NSE index futures: history IS available.** Expired monthly Nifty and Bank Nifty futures returned about 58–64 daily candles each, for every March contract 2021–2025. A continuous back-adjusted series 2021→2026 can be built. (Note: `get_expiries` returns *option* expiries; futures use the monthly expiry. Daily requests are limited to 180 days per call.)
+  - **MCX commodities: NO history via Groww's API.** Zero candles for currently listed contracts (crude, crude-mini, gold-mini) within the 180-day limit, for "continuous" symbols, and for just-expired crude. `get_expiries` also returns nothing for MCX. Commodity trend-following therefore needs **another data source**, e.g. MCX's official daily bhavcopy archive (public; not yet checked).
