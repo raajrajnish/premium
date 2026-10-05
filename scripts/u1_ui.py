@@ -127,7 +127,7 @@ async function tick(){
  document.getElementById('kpis').innerHTML=[['Trades',a.trades],['Total',fmt(a.total)],['Avg/trade',fmt(a.avg)],['Win %',a.win_rate??'—'],['Profit factor',a.pf??'—'],['Worst streak',fmt(a.worst_streak)],['Max drawdown',fmt(a.max_dd)],['Days',a.days]].map(([n,v])=>`<div class="kpi"><b>${v}</b><span>${n}</span></div>`).join('');
  document.getElementById('ver').textContent=a.version+(s.version&&s.version!==a.version?' (today runs '+s.version+')':'');
  const g=(a.groups||{})[a.version];document.getElementById('bycls').innerHTML=g?'<tr><th>Class</th><th>Trades</th><th>Avg</th><th>Win %</th><th>Total</th></tr>'+Object.entries(g.by_class).map(([k,v])=>`<tr><td>${k}</td><td>${v.trades}</td><td class="${cls(v.avg)}">${fmt(v.avg)}</td><td>${v.win_rate??'—'}</td><td class="${cls(v.total)}">${fmt(v.total)}</td></tr>`).join(''):'';
- document.getElementById('goal').textContent=`First look at 20 trades, verdict at 40 (or 8 weeks). Keep if avg > 0, PF ≥ 1.3, worst streak ≥ −₹5,000/lot. Progress: ${a.trades}/40.`;
+ document.getElementById('goal').textContent=`Testing phase: no trade cap and no pass/fail thresholds; collecting trades for analysis (${a.trades} so far in ${a.version}).`;
 }
 tick();setInterval(tick,5000);
 </script></body></html>"""

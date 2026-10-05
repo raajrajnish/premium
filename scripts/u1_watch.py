@@ -26,6 +26,9 @@ OUT = ROOT / "data" / "u1"
 LOT, CHARGES = 65, 1.5
 START, LAST_ENTRY, HARD = time(9, 45), time(14, 30), time(15, 10)
 MAX_TRADES, PAUSE_MIN, TIME_STOP_MIN = 4, 5, 15
+# TESTING PHASE (owner, 2026-10-05): the daily trade cap is OFF from this moment on (README §4).
+# Signals before it keep the cap, so the morning's recorded trades stay unchanged.
+CAP_OFF_FROM: datetime | None = datetime(2026, 10, 5, 11, 25)
 V2_FROM = date(2026, 10, 6)
 WALL_RANGE, ROOM_OK, SPREAD_OK = 300, 25.0, 1.0
 OPT = re.compile(r"NSE_NIFTY(\d\d[A-Z0-9]\d\d)(\d{5})(CE|PE)$")
@@ -293,7 +296,7 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
         rec["spread_ok"] = None if sq is None else (sq[1] - sq[0]) <= SPREAD_OK
         if rec["confirmations"] < 3:
             rec["why_not"] = "confirmations<3"
-        elif len(trades) >= MAX_TRADES:
+        elif len(trades) >= MAX_TRADES and (CAP_OFF_FROM is None or ts < CAP_OFF_FROM):
             rec["why_not"] = "max trades"
         elif ts < pause:
             rec["why_not"] = "pause"

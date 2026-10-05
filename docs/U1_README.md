@@ -7,6 +7,8 @@ This file is the **single source of truth** for U1. Code follows this file. Any 
 | v1 | 2026-10-05 09:45 | First version. Trend on 1-min candles; one exit for all trades. Rules: `docs/studies/2026-10-05_U1_multi_confirmation.md`. |
 | **v2** | **2026-10-06** (next trading day) | Trend on **3-min** candles; **entry classes K1–K4** recorded on every trade; **safety checks** logged (not blocking). The exit is unchanged until the per-class exits are agreed. |
 
+| **testing phase** | **2026-10-05 11:25** | Owner: **no daily trade cap** and **no pass/fail thresholds** while testing, to collect as many trades as possible. The pause, one-at-a-time and per-trade stop are unchanged. |
+
 Results of different versions are **never mixed**; the dashboard shows them separately.
 
 ---
@@ -53,7 +55,7 @@ Results of different versions are **never mixed**; the dashboard shows them sepa
 - **Confirmations:** at least **3 of 5** green.
 - **Only one side** may qualify in that minute; if both qualify, it is ignored as mixed.
 - **Checked once a minute**, at each 1-min candle close, **09:45–14:30**.
-- **Limits:** at most **4 trades a day**, one at a time, with a **5-minute pause** after each exit.
+- **Limits:** one trade at a time, with a **5-minute pause** after each exit. The cap of 4 trades/day is **OFF during the testing phase** (from 2026-10-05 11:25). There is no daily loss limit.
 
 ## 5. Entry
 - Buy **1 lot (65)** of the **ATM option** (strike nearest spot, nearest expiry): CE for CALL, PE for PUT.
@@ -106,10 +108,8 @@ After a few weeks, compare trades with and without each check. They become block
    - `state.json`: live state for the dashboard.
 
 ## 11. How U1 is judged
-- **Per version, and per class within v2.**
-- **First look:** after 20 trades.
-- **Verdict:** after 40 trades or 8 weeks.
-- **To keep it:**
-  - average ₹/trade > 0 after costs;
-  - profit factor ≥ 1.3;
-  - worst losing streak no worse than −₹5,000/lot.
+**Testing phase (owner, 2026-10-05): no pass/fail thresholds.** Every trade is recorded, per version and per class, for analysis.
+
+The criteria below are *suspended* until the owner ends the testing phase:
+- ~~First look after 20 trades; verdict after 40 trades or 8 weeks.~~
+- ~~To keep it: average ₹/trade > 0 after costs; profit factor ≥ 1.3; worst losing streak no worse than −₹5,000/lot.~~
