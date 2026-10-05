@@ -136,26 +136,19 @@ def minute_frame(feed: Feed) -> pd.DataFrame:
     return b
 
 
-def evaluate(b: pd.DataFrame, i: int, feed: Feed) -> dict[str, Any] | None:
-    """Layers 1–2 at completed bar i; returns the record (with confirmations) or None."""
-    if i < 26:
-        return None
-    r, p, p5 = b.iloc[i], b.iloc[i - 1], b.iloc[i - 5]
+def components(b: pd.DataFrame, i: int, feed: Feed, d: int) -> dict[str, Any]:
+    """Every U1 condition for direction d (+1 CALL, -1 PUT) at completed bar i (needs i >= 26)."""
+    r, p, p5, b3 = b.iloc[i], b.iloc[i - 1], b.iloc[i - 5], b.iloc[i - 3]
     prev5 = b.iloc[i - 5:i]
-    res = {}
-    for d in (1, -1):
-        trend = (d * (r.fpx - r.vwap) > 0 and d * (r.ema9 - r.ema21) > 0 and d * (r.ema9 - p.ema9) > 0)
-        band = (r.close > r.bb_up) if d > 0 else (r.close < r.bb_lo)
-        brk = (r.close > prev5.high.max()) if d > 0 else (r.close < prev5.low.min())
-        trig = (band and r.bw > p5.bw) or brk
-        if trend and trig:
-            res[d] = (band and r.bw > p5.bw, brk)
-    if len(res) != 1:
-        return None
-    d = next(iter(res))
-    b3 = b.iloc[i - 3]
-    strength = (60 <= r.rsi <= 80 and r.macdh > 0 and r.macdh > p.macdh) if d > 0 else \
-               (20 <= r.rsi <= 40 and r.macdh < 0 and r.macdh < p.macdh)
+    above_vwap = bool(d * (r.fpx - r.vwap) > 0)
+    ema_order = bool(d * (r.ema9 - r.ema21) > 0)
+    ema_slope = bool(d * (r.ema9 - p.ema9) > 0)
+    band = bool(((r.close > r.bb_up) if d > 0 else (r.close < r.bb_lo)) and r.bw > p5.bw)
+    brk = bool((r.close > prev5.high.max()) if d > 0 else (r.close < prev5.low.min()))
+    if d > 0:
+        strength = 60 <= r.rsi <= 80 and r.macdh > 0 and r.macdh > p.macdh
+    else:
+        strength = 20 <= r.rsi <= 40 and r.macdh < 0 and r.macdh < p.macdh
     volume = bool(r.fvol_avg20 and r.fvol >= 1.5 * r.fvol_avg20)
     heavy = sum(d * (r[c] - b3[c]) > 0 for c in ("bn", "hdfc", "icici")) >= 2
     vix = (r.vix - b3.vix <= 0) if d > 0 else (r.vix - b3.vix >= 0)
@@ -168,14 +161,30 @@ def evaluate(b: pd.DataFrame, i: int, feed: Feed) -> dict[str, Any] | None:
         oi = (dce < 0 or dpe > 0) if d > 0 else (dpe < 0 or dce > 0)
     conf = {"strength": bool(strength), "volume": volume, "heavyweights": bool(heavy), "vix": bool(vix),
             "oi": bool(oi)}
+    return {"vwap": above_vwap, "ema_order": ema_order, "ema_slope": ema_slope, "trend": above_vwap and ema_order
+            and ema_slope, "trigger_band": band, "trigger_break": brk, "trigger": band or brk, **conf,
+            "confirmations": sum(conf.values())}
+
+
+def evaluate(b: pd.DataFrame, i: int, feed: Feed) -> dict[str, Any] | None:
+    """Layers 1–2 at completed bar i; returns the record (with confirmations) or None."""
+    if i < 26:
+        return None
+    comp = {d: components(b, i, feed, d) for d in (1, -1)}
+    live = [d for d in (1, -1) if comp[d]["trend"] and comp[d]["trigger"]]
+    if len(live) != 1:
+        return None
+    d = live[0]
+    c, r = comp[d], b.iloc[i]
     return {"minute": b.index[i].strftime("%H:%M"), "side": "CALL" if d > 0 else "PUT", "dir": d,
-            "close": round(float(r.close), 2), "trigger_band": bool(res[d][0]), "trigger_break": bool(res[d][1]),
+            "close": round(float(r.close), 2), "trigger_band": c["trigger_band"], "trigger_break": c["trigger_break"],
             "rsi": round(float(r.rsi), 1), "macd_hist": round(float(r.macdh), 2),
             "fvol_x": round(float(r.fvol / r.fvol_avg20), 2) if r.fvol_avg20 else None,
-            **conf, "confirmations": sum(conf.values()), "sig_low": float(r.low), "sig_high": float(r.high)}
+            **{k: c[k] for k in ("strength", "volume", "heavyweights", "vix", "oi")},
+            "confirmations": c["confirmations"], "sig_low": float(r.low), "sig_high": float(r.high)}
 
 
-def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     b = minute_frame(feed)
     signals: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
@@ -246,7 +255,37 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
                        "fill": "ask" if q else "ltp+0.5"}
                 rec["taken"] = True
         signals.append(rec)
-    return signals, trades
+    return signals, trades, pos
+
+
+def write_state(feed: Feed, signals: list[dict[str, Any]], trades: list[dict[str, Any]],
+                pos: dict[str, Any] | None) -> None:
+    """data/u1/state.json for the U1 dashboard: open position (marked at the bid), checklist, recent bars."""
+    b = minute_frame(feed)
+    ts, idx, fno = feed.ltp[-1]
+    complete = b.iloc[:-1]                                   # the last bar is still forming
+    check = None
+    if len(complete) > 26:
+        i = len(complete) - 1
+        check = {"minute": complete.index[i].strftime("%H:%M"),
+                 "CALL": components(b, i, feed, 1), "PUT": components(b, i, feed, -1)}
+    open_pos = None
+    if pos is not None:
+        q = feed.quote(pos["key"], ts)
+        last = fno.get(pos["key"])
+        mark = q[0] if q else (float(last) - 0.5 if last is not None else None)
+        open_pos = {k: v for k, v in pos.items() if k not in ("entry_dt",)} | {
+            "mark": mark, "unreal_lot": round((mark - pos["entry_px"] - CHARGES) * LOT) if mark is not None else None}
+    tail = b.tail(120)
+    bars = [{"t": int(pd.Timestamp(t).timestamp()), "o": r.open, "h": r.high, "l": r.low, "c": r.close,
+             "ema9": r.ema9, "ema21": r.ema21, "bb_up": r.bb_up, "bb_lo": r.bb_lo} for t, r in tail.iterrows()]
+    state = {"updated": datetime.now().isoformat(timespec="seconds"), "feed_ts": ts.isoformat(timespec="seconds"),
+             "day": str(feed.day), "nifty": idx.get("NSE_NIFTY"), "vix": idx.get("NSE_INDIAVIX"),
+             "open": open_pos, "checklist": check, "trades": trades, "signals": signals[-30:],
+             "bars": [{k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in x.items()} for x in bars]}
+    tmp = OUT / "state.tmp"
+    tmp.write_text(json.dumps(state, default=str), encoding="utf-8")
+    tmp.replace(OUT / "state.json")
 
 
 def main() -> None:
@@ -262,7 +301,8 @@ def main() -> None:
     while True:
         feed.update()
         if feed.ltp:
-            sig, tr = run_day(feed)
+            sig, tr, pos = run_day(feed)
+            write_state(feed, sig, tr, pos)
             pd.DataFrame(sig).to_csv(OUT / f"{day}_signals.csv", index=False)
             pd.DataFrame(tr).to_csv(OUT / f"{day}_trades.csv", index=False)
             for t in tr[shown:]:
