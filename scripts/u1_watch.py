@@ -1,6 +1,6 @@
 """U1 multi-confirmation setup: PAPER-only live watcher. Rules: docs/U1_README.md (single source of truth).
-v1 (2026-10-05): trend on 1-min candles. v2 (from 2026-10-06): trend on 3-min candles; classes K1–K4 and safety
-checks are logged on every signal (logging only; they never change a decision).
+v1 (2026-10-05): trend on 1-min candles, exit EC0 only. v3 (from 2026-10-06): trend on 3-min candles; classes K1–K4,
+safety checks and signal quality logged; four challenger exits (scripts/u1_exits.py) on every entry.
 
 Reads the Nifty system's recorder files READ-ONLY (incrementally) and writes only premium/data/u1/.
 Every poll replays the whole day deterministically from the parsed data, so a restart gives the same result.
@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from u1_exits import MODELS_V1, MODELS_V3, Ctx, Leg, step
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT.parent / "suzlon" / "data" / "raw"
@@ -29,13 +30,26 @@ MAX_TRADES, PAUSE_MIN, TIME_STOP_MIN = 4, 5, 15
 # TESTING PHASE (owner, 2026-10-05): the daily trade cap is OFF from this moment on (README §4).
 # Signals before it keep the cap, so the morning's recorded trades stay unchanged.
 CAP_OFF_FROM: datetime | None = datetime(2026, 10, 5, 11, 25)
-V2_FROM = date(2026, 10, 6)
+V3_FROM = date(2026, 10, 6)
+MONTH = {**{str(i): i for i in range(1, 10)}, "O": 10, "N": 11, "D": 12}
 WALL_RANGE, ROOM_OK, SPREAD_OK = 300, 25.0, 1.0
 OPT = re.compile(r"NSE_NIFTY(\d\d[A-Z0-9]\d\d)(\d{5})(CE|PE)$")
 
 
 def version(day: date) -> str:
-    return "v2" if day >= V2_FROM else "v1"
+    return "v3" if day >= V3_FROM else "v1"
+
+
+def expiry_of(key: str) -> date | None:
+    """Weekly option key NSE_NIFTY26O0622550CE → 2026-10-06 (month code 1–9, O, N, D)."""
+    m = OPT.match(key)
+    if not m:
+        return None
+    s = m.group(1)
+    try:
+        return date(2000 + int(s[:2]), MONTH[s[2]], int(s[3:5]))
+    except (KeyError, ValueError):
+        return None
 
 
 class Tail:
@@ -163,7 +177,7 @@ def components(b: pd.DataFrame, i: int, feed: Feed, d: int, ver: str = "v1") -> 
     r, p, p5, b3 = b.iloc[i], b.iloc[i - 1], b.iloc[i - 5], b.iloc[i - 3]
     prev5 = b.iloc[i - 5:i]
     above_vwap = bool(d * (r.fpx - r.vwap) > 0)
-    if ver == "v2":
+    if ver != "v1":
         ema_order = bool(d * (r.ema9_3 - r.ema21_3) > 0)
         ema_slope = bool(d * (r.ema9_3 - r.ema9_3_prev) > 0)
     else:
@@ -239,14 +253,48 @@ def evaluate(b: pd.DataFrame, i: int, feed: Feed, ver: str = "v1") -> dict[str, 
             "confirmations": c["confirmations"], "sig_low": float(r.low), "sig_high": float(r.high)}
 
 
+def option_vol(feed: Feed, key: str, t0: datetime) -> float | None:
+    """Average absolute 1-min % change of the option's last price over the 10 minutes before t0 (EC2+ rule 2)."""
+    times = [x[0] for x in feed.ltp]
+    a, z = bisect.bisect_left(times, t0 - timedelta(minutes=10)), bisect.bisect_left(times, t0)
+    px = pd.Series({feed.ltp[k][0]: feed.ltp[k][2].get(key) for k in range(a, z)}, dtype=float).dropna()
+    if px.empty:
+        return None
+    m = px.resample("1min").last().dropna()
+    return float(m.pct_change().abs().dropna().mean()) if len(m) >= 4 else None
+
+
+def mark(feed: Feed, key: str, ts: datetime, fno: dict[str, float]) -> float | None:
+    q = feed.quote(key, ts)
+    if q:
+        return q[0]
+    last = fno.get(key)
+    return float(last) - 0.5 if last is not None else None
+
+
+def close_trade(pos: dict[str, Any]) -> dict[str, Any]:
+    """One row per entry: base fields + each model's exit; pnl_lot/exit/reason = EC0 (compatible with v1 files)."""
+    row = {k: v for k, v in pos.items() if k not in ("entry_dt", "dir", "legs", "hard", "near_exp")}
+    for leg in pos["legs"]:
+        row |= {f"{leg.model}_exit": leg.exit_ts.strftime("%H:%M:%S") if leg.exit_ts else None,
+                f"{leg.model}_px": round(leg.exit_px, 2) if leg.exit_px is not None else None,
+                f"{leg.model}_reason": leg.reason, f"{leg.model}_pnl": leg.pnl()}
+    e0 = pos["legs"][0]
+    pnl = (e0.exit_px or 0) - pos["entry_px"] - CHARGES
+    return row | {"exit": row["EC0_exit"], "exit_px": row["EC0_px"], "reason": e0.reason,
+                  "pnl_per_unit": round(pnl, 2), "pnl_lot": e0.pnl()}
+
+
 def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     b = minute_frame(feed)
     ver = version(feed.day)
+    models = MODELS_V1 if ver == "v1" else MODELS_V3
     signals: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     pos: dict[str, Any] | None = None
     pause = datetime.combine(feed.day, time(0))
     done_min: pd.Timestamp | None = None
+    prev_ts: datetime | None = None
     for ts, idx, fno in feed.ltp:
         m = pd.Timestamp(ts.replace(second=0, microsecond=0))
         completed_i = None
@@ -256,26 +304,30 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
                 completed_i = b.index.get_loc(prev)
             done_min = m - timedelta(minutes=1) if completed_i is not None else done_min
         spot = float(idx["NSE_NIFTY"])
+        gap = prev_ts is not None and (ts - prev_ts).total_seconds() > 60
+        prev_ts = ts
         if pos is not None:
-            reason = None
-            if pos["dir"] * (spot - pos["stop"]) < 0:
-                reason = "stop"
-            elif completed_i is not None and pos["dir"] * (b.iloc[completed_i].close - b.iloc[completed_i].ema9) < 0:
-                reason = "trail"
-            elif ts - pos["entry_dt"] >= timedelta(minutes=TIME_STOP_MIN):
-                reason = "time"
-            elif ts.time() >= HARD:
-                reason = "15:10"
-            if reason:
-                q = feed.quote(pos["key"], ts)
-                last = fno.get(pos["key"])
-                if q is None and last is None:
+            d = pos["dir"]
+            bid = mark(feed, pos["key"], ts, fno)
+            opposite = False
+            if completed_i is not None and completed_i >= 26 and ver != "v1":
+                oc = components(b, completed_i, feed, -d, ver)
+                opposite = bool(oc["trend"] and oc["trigger"] and oc["confirmations"] >= 3)
+            bar = b.iloc[completed_i] if completed_i is not None else None
+            ctx = Ctx(ts=ts, spot=spot, bid=bid, bar_close=float(bar.close) if bar is not None else None,
+                      bar_ema9=float(bar.ema9) if bar is not None else None, opposite=opposite, feed_gap=gap,
+                      hard=pos["hard"], near_exp=pos["near_exp"])
+            for leg in pos["legs"]:
+                if not leg.open:
                     continue
-                px = q[0] if q else float(last) - 0.5
-                pnl = px - pos["entry_px"] - CHARGES
-                trades.append({k: v for k, v in pos.items() if k not in ("entry_dt", "dir")} |
-                              {"exit": ts.strftime("%H:%M:%S"), "exit_px": round(px, 2), "reason": reason,
-                               "pnl_per_unit": round(pnl, 2), "pnl_lot": round(pnl * LOT)})
+                why = step(leg, ctx)
+                px = leg.last_bid if (why == "K feed") else bid
+                if why and px is not None:
+                    leg.reason, leg.exit_ts, leg.exit_px = why, ts, px
+                if bid is not None:
+                    leg.last_bid = bid
+            if all(not leg.open for leg in pos["legs"]):
+                trades.append(close_trade(pos))
                 pos, pause = None, ts + timedelta(minutes=PAUSE_MIN)
             continue
         if completed_i is None:
@@ -294,6 +346,8 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
         sq = feed.quote(atm_keys[0], ts) if atm_keys else None
         rec["spread"] = round(sq[1] - sq[0], 2) if sq else None
         rec["spread_ok"] = None if sq is None else (sq[1] - sq[0]) <= SPREAD_OK
+        rec["green_items"] = 3 + int(rec["trigger_band"]) + int(rec["trigger_break"]) + rec["confirmations"]
+        rec["quality"] = rec["green_items"] + int(bool(rec["room_ok"])) + int(bool(rec["spread_ok"]))
         if rec["confirmations"] < 3:
             rec["why_not"] = "confirmations<3"
         elif len(trades) >= MAX_TRADES and (CAP_OFF_FROM is None or ts < CAP_OFF_FROM):
@@ -301,22 +355,29 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
         elif ts < pause:
             rec["why_not"] = "pause"
         else:
-            side = "CE" if rec["dir"] > 0 else "PE"
             strike = int(round(spot / 50) * 50)
-            keys = sorted(k for k in fno if (mm := OPT.match(k)) and int(mm.group(2)) == strike and mm.group(3) == side)
+            keys = sorted(k for k in fno if (mm := OPT.match(k)) and int(mm.group(2)) == strike
+                          and mm.group(3) == side_k)
             if not keys:
                 rec["why_not"] = "no ATM option price"
             else:
                 key = keys[0]
                 q = feed.quote(key, ts)
                 px = q[1] if q else float(fno[key]) + 0.5
+                exp = expiry_of(key)
+                near = exp is not None and (exp - feed.day).days <= 1
+                hard = time(14, 45) if exp == feed.day else HARD
+                vol = option_vol(feed, key, ts) if "EC2P" in models else None
+                L = min(0.25, max(0.10, 3 * vol)) if vol else 0.20
+                stop_c = rec["sig_low"] if rec["dir"] > 0 else rec["sig_high"]
+                legs = [Leg(model=mo, dir=rec["dir"], spot0=spot, px0=px, t0=ts, stop_c=stop_c, L=L) for mo in models]
                 pos = {"date": str(feed.day), "version": ver, "class": rec["class"], "signal_min": rec["minute"],
                        "side": rec["side"], "key": key, "room_pts": rec["room_pts"], "room_ok": rec["room_ok"],
-                       "spread": rec["spread"], "spread_ok": rec["spread_ok"],
-                       "confirmations": rec["confirmations"], "entry": ts.strftime("%H:%M:%S"),
-                       "entry_px": round(px, 2), "nifty": spot, "dir": rec["dir"], "entry_dt": ts,
-                       "stop": rec["sig_low"] if rec["dir"] > 0 else rec["sig_high"],
-                       "fill": "ask" if q else "ltp+0.5"}
+                       "spread": rec["spread"], "spread_ok": rec["spread_ok"], "quality": rec["quality"],
+                       "green_items": rec["green_items"], "confirmations": rec["confirmations"],
+                       "entry": ts.strftime("%H:%M:%S"), "entry_px": round(px, 2), "nifty": spot,
+                       "dir": rec["dir"], "entry_dt": ts, "stop": stop_c, "fill": "ask" if q else "ltp+0.5",
+                       "ec2p_loss_limit": round(L, 3), "near_exp": near, "hard": hard, "legs": legs}
                 rec["taken"] = True
         signals.append(rec)
     return signals, trades, pos
@@ -336,16 +397,17 @@ def write_state(feed: Feed, signals: list[dict[str, Any]], trades: list[dict[str
                  "CALL": components(b, i, feed, 1, ver), "PUT": components(b, i, feed, -1, ver)}
     open_pos = None
     if pos is not None:
-        q = feed.quote(pos["key"], ts)
-        last = fno.get(pos["key"])
-        mark = q[0] if q else (float(last) - 0.5 if last is not None else None)
-        open_pos = {k: v for k, v in pos.items() if k not in ("entry_dt",)} | {
-            "mark": mark, "unreal_lot": round((mark - pos["entry_px"] - CHARGES) * LOT) if mark is not None else None}
+        mk = mark(feed, pos["key"], ts, fno)
+        open_pos = {k: v for k, v in pos.items() if k not in ("entry_dt", "legs", "hard")} | {
+            "mark": mk, "unreal_lot": round((mk - pos["entry_px"] - CHARGES) * LOT) if mk is not None else None,
+            "legs": [{"model": lg.model, "open": lg.open, "reason": lg.reason,
+                      "pnl": lg.pnl() if not lg.open else (lg.pnl(mk) if mk is not None else None)}
+                     for lg in pos["legs"]]}
     tail = b.tail(120)
     bars = [{"t": int(pd.Timestamp(t).timestamp()), "o": r.open, "h": r.high, "l": r.low, "c": r.close,
              "ema9": r.ema9, "ema21": r.ema21, "bb_up": r.bb_up, "bb_lo": r.bb_lo} for t, r in tail.iterrows()]
     state = {"updated": datetime.now().isoformat(timespec="seconds"), "feed_ts": ts.isoformat(timespec="seconds"),
-             "day": str(feed.day), "version": ver, "trend_tf": "3-min" if ver == "v2" else "1-min",
+             "day": str(feed.day), "version": ver, "trend_tf": "3-min" if ver != "v1" else "1-min",
              "nifty": idx.get("NSE_NIFTY"), "vix": idx.get("NSE_INDIAVIX"),
              "open": open_pos, "checklist": check, "trades": trades, "signals": signals[-30:],
              "bars": [{k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in x.items()} for x in bars]}

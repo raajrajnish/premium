@@ -42,6 +42,21 @@ def stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
             "equity": [round(v) for v in _cum(p)]}
 
 
+MODELS = ("EC0", "EC1", "EC2", "EC2P")
+
+
+def challengers(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per exit model, on the same entries (README §7). v1 rows only have EC0 (= pnl_lot)."""
+    out: dict[str, Any] = {}
+    for m in MODELS:
+        rows = [dict(t, pnl_lot=t.get(f"{m}_pnl") if m != "EC0" else (t.get("EC0_pnl") or t.get("pnl_lot")))
+                for t in trades]
+        rows = [r for r in rows if r["pnl_lot"] not in (None, "")]
+        if rows:
+            out[m] = stats(rows)
+    return out
+
+
 def grouped(trades: list[dict[str, Any]]) -> dict[str, Any]:
     """Stats per rule version, and per entry class within each version (README §11: never mixed)."""
     out: dict[str, Any] = {}
@@ -90,6 +105,8 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
 <div>
  <div class="card"><h2>Open position</h2><div id="open">—</div></div>
  <div class="card" style="margin-top:14px"><h2>Checklist · last completed minute <span id="chkmin"></span></h2><div class="chk" id="chk"></div></div>
+ <div class="card" style="margin-top:14px"><h2>Exit challengers · same entries</h2><table id="chal"></table>
+  <div class="tag" style="margin-top:6px">EC0 champion · EC1 Nifty-points rulebook · EC2 owner's 20/15/25 · EC2+ EC2 with 5 additions</div></div>
  <div class="card" style="margin-top:14px"><h2>All-time · current rule version <span id="ver"></span></h2><div class="kpis" id="kpis"></div>
   <div class="tag" id="goal" style="margin-top:8px"></div><table id="bycls" style="margin-top:8px"></table></div>
 </div>
@@ -118,13 +135,14 @@ async function tick(){
   mk.push({time:m(t.exit),position:'inBar',color:t.pnl_lot>0?'#22c55e':'#ef4444',shape:'circle',text:fmt(t.pnl_lot)});}
  if(s.open)mk.push({time:m(s.open.entry),position:s.open.side=='CALL'?'belowBar':'aboveBar',color:'#fcd34d',shape:s.open.side=='CALL'?'arrowUp':'arrowDown',text:s.open.side+' open'});
  mk.sort((x,y)=>x.time-y.time);candle.setMarkers(mk);
- document.getElementById('open').innerHTML=s.open?`<b>${s.open.side}</b> ${s.open.key.replace('NSE_','')}<br>entry ${s.open.entry} @ ₹${s.open.entry_px} (${s.open.confirmations}/5)<br>mark ₹${s.open.mark??'—'} · stop Nifty ${s.open.stop}<br><b class="${cls(s.open.unreal_lot)}" style="font-size:20px">${fmt(s.open.unreal_lot)}</b> /lot (after costs)`:'No open trade';
+ document.getElementById('open').innerHTML=s.open?`<b>${s.open.side}</b> ${s.open.key.replace('NSE_','')}<br>entry ${s.open.entry} @ ₹${s.open.entry_px} (${s.open.confirmations}/5)<br>mark ₹${s.open.mark??'—'} · stop Nifty ${s.open.stop}<br><b class="${cls(s.open.unreal_lot)}" style="font-size:20px">${fmt(s.open.unreal_lot)}</b> /lot (after costs)`+(s.open.legs&&s.open.legs.length>1?'<table style="margin-top:6px">'+s.open.legs.map(l=>`<tr><td>${l.model.replace('EC2P','EC2+')}</td><td>${l.open?'open':l.reason}</td><td class="${cls(l.pnl)}">${fmt(l.pnl)}</td></tr>`).join('')+'</table>':''):'No open trade';
  const c=s.checklist;document.getElementById('chkmin').textContent=c?c.minute:'(warming up — needs ~27 min of data)';
  const tf=s.trend_tf||'1-min';const rows=[['Above/below VWAP','vwap'],[`EMA 9 vs 21 (${tf})`,'ema_order'],[`EMA 9 slope (${tf})`,'ema_slope'],['Trigger: band breakout','trigger_band'],['Trigger: 5-min break','trigger_break'],['Strength RSI+MACD','strength'],['Volume surge','volume'],['Heavyweights','heavyweights'],['VIX','vix'],['Options OI','oi']];
  document.getElementById('chk').innerHTML=c?['CALL','PUT'].map(sd=>`<div><b>${sd}</b> · ${c[sd].confirmations}/5${c[sd].trend&&c[sd].trigger?' · <span class="pos">setup live</span>':''}<br>`+rows.map(([n,k])=>`<div><span class="dot ${c[sd][k]?'y':'n'}"></span>${n}</div>`).join('')+'</div>').join(''):'';
- const tr=s.trades;document.getElementById('trades').innerHTML=tr.length?'<tr><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.side} ${t.class||''} ${t.confirmations}/5</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td class="${cls(+t.pnl_lot)}">${fmt(+t.pnl_lot)}</td></tr>`).join(''):'<tr><td>No closed trades yet today</td></tr>';
+ const tr=s.trades;document.getElementById('trades').innerHTML=tr.length?(tr[0]&&tr[0].EC1_pnl!=null?'<tr><th>Side</th><th>Entry</th><th>EC0</th><th>EC1</th><th>EC2</th><th>EC2+</th></tr>'+tr.map(t=>`<tr><td>${t.side} ${t.class||''} q${t.quality??''}</td><td>${t.entry} @ ${t.entry_px}</td>`+['EC0','EC1','EC2','EC2P'].map(m=>`<td class="${cls(+t[m+'_pnl'])}" title="${t[m+'_reason']} at ${t[m+'_exit']}">${fmt(+t[m+'_pnl'])}</td>`).join('')+'</tr>').join(''):'<tr><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.side} ${t.class||''} ${t.confirmations}/5</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td class="${cls(+t.pnl_lot)}">${fmt(+t.pnl_lot)}</td></tr>`).join('')):'<tr><td>No closed trades yet today</td></tr>';
  const sg=s.signals.slice().reverse();document.getElementById('signals').innerHTML=sg.length?'<tr><th>Min</th><th>Side</th><th>Conf</th><th>Taken</th></tr>'+sg.map(x=>`<tr><td>${x.minute}</td><td>${x.side} ${x.class||''}</td><td>${x.confirmations}/5</td><td>${x.taken?'yes':(x.why_not||'no')}</td></tr>`).join(''):'<tr><td>None yet</td></tr>';
  document.getElementById('kpis').innerHTML=[['Trades',a.trades],['Total',fmt(a.total)],['Avg/trade',fmt(a.avg)],['Win %',a.win_rate??'—'],['Profit factor',a.pf??'—'],['Worst streak',fmt(a.worst_streak)],['Max drawdown',fmt(a.max_dd)],['Days',a.days]].map(([n,v])=>`<div class="kpi"><b>${v}</b><span>${n}</span></div>`).join('');
+ const ch=a.challengers||{};document.getElementById('chal').innerHTML='<tr><th>Model</th><th>Trades</th><th>Total</th><th>Avg</th><th>Win %</th><th>Worst streak</th></tr>'+Object.entries(ch).map(([k,v])=>`<tr><td>${k.replace('EC2P','EC2+')}</td><td>${v.trades}</td><td class="${cls(v.total)}">${fmt(v.total)}</td><td class="${cls(v.avg)}">${fmt(v.avg)}</td><td>${v.win_rate??'—'}</td><td class="neg">${fmt(v.worst_streak)}</td></tr>`).join('');
  document.getElementById('ver').textContent=a.version+(s.version&&s.version!==a.version?' (today runs '+s.version+')':'');
  const g=(a.groups||{})[a.version];document.getElementById('bycls').innerHTML=g?'<tr><th>Class</th><th>Trades</th><th>Avg</th><th>Win %</th><th>Total</th></tr>'+Object.entries(g.by_class).map(([k,v])=>`<tr><td>${k}</td><td>${v.trades}</td><td class="${cls(v.avg)}">${fmt(v.avg)}</td><td>${v.win_rate??'—'}</td><td class="${cls(v.total)}">${fmt(v.total)}</td></tr>`).join(''):'';
  document.getElementById('goal').textContent=`Testing phase: no trade cap and no pass/fail thresholds; collecting trades for analysis (${a.trades} so far in ${a.version}).`;
@@ -148,8 +166,8 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/stats":
             tr = all_trades()
             cur = max((t.get("version") or "v1" for t in tr), default="v1")
-            body = stats([t for t in tr if (t.get("version") or "v1") == cur]) | {"version": cur,
-                                                                                   "groups": grouped(tr)}
+            cur_tr = [t for t in tr if (t.get("version") or "v1") == cur]
+            body = stats(cur_tr) | {"version": cur, "groups": grouped(tr), "challengers": challengers(cur_tr)}
             self._send(json.dumps(body).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")

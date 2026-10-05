@@ -5,9 +5,9 @@ This file is the **single source of truth** for U1. Code follows this file. Any 
 | Version | Valid from | Summary |
 |---|---|---|
 | v1 | 2026-10-05 09:45 | First version. Trend on 1-min candles; one exit for all trades. Rules: `docs/studies/2026-10-05_U1_multi_confirmation.md`. |
-| **v2** | **2026-10-06** (next trading day) | Trend on **3-min** candles; **entry classes K1–K4** recorded on every trade; **safety checks** logged (not blocking). The exit is unchanged until the per-class exits are agreed. |
-
-| **testing phase** | **2026-10-05 11:25** | Owner: **no daily trade cap** and **no pass/fail thresholds** while testing, to collect as many trades as possible. The pause, one-at-a-time and per-trade stop are unchanged. |
+| v2 | (planned 2026-10-06; never ran live) | Trend on 3-min candles; classes K1–K4; safety checks logged. **Superseded by v3 before it ran.** |
+| **testing phase**  | **2026-10-05 11:25** | Owner: **no daily trade cap** and **no pass/fail thresholds** while testing, to collect as many trades as possible. The pause, one-at-a-time and per-trade stop are unchanged. |
+| **v3** | **2026-10-06** (next trading day) | Everything in v2 (3-min trend, classes K1–K4, safety checks logged), **plus four challenger exits (EC0, EC1, EC2, EC2+) run on every entry** (§7), **plus a signal-quality score** on every signal (§8). |
 
 Results of different versions are **never mixed**; the dashboard shows them separately.
 
@@ -35,8 +35,8 @@ Results of different versions are **never mixed**; the dashboard shows them sepa
 | Group | Item | Timeframe | CALL is green when |
 |---|---|---|---|
 | **Trend** | Above VWAP | day so far (futures) | futures price > futures VWAP |
-| | EMA 9 vs 21 | **3-min candles** (v2) | EMA 9 > EMA 21 |
-| | EMA 9 slope | **3-min candles** (v2) | EMA 9 > its value one 3-min candle earlier |
+| | EMA 9 vs 21 | **3-min candles** (v3) | EMA 9 > EMA 21 |
+| | EMA 9 slope | **3-min candles** (v3) | EMA 9 > its value one 3-min candle earlier |
 | **Trigger** | Band breakout | 1-min | close > upper Bollinger (20, 2) **and** band width > 5 minutes ago |
 | | 5-min break | 1-min | close > highest high of the previous five 1-min candles |
 | **Confirmations** | Strength | 1-min | RSI(7) 60–80 **and** MACD(12,26,9) histogram > 0 and rising |
@@ -55,13 +55,13 @@ Results of different versions are **never mixed**; the dashboard shows them sepa
 - **Confirmations:** at least **3 of 5** green.
 - **Only one side** may qualify in that minute; if both qualify, it is ignored as mixed.
 - **Checked once a minute**, at each 1-min candle close, **09:45–14:30**.
-- **Limits:** one trade at a time, with a **5-minute pause** after each exit. The cap of 4 trades/day is **OFF during the testing phase** (from 2026-10-05 11:25). There is no daily loss limit.
+- **Limits:** one trade at a time (v3: the next entry waits until **all four** challenger exits have closed, so every model trades exactly the same entries), with a **5-minute pause** after the last exit. The cap of 4 trades/day is **OFF during the testing phase** (from 2026-10-05 11:25). There is no daily loss limit.
 
 ## 5. Entry
 - Buy **1 lot (65)** of the **ATM option** (strike nearest spot, nearest expiry): CE for CALL, PE for PUT.
 - Price = the **ask** at the first live price after the signal (or last price + ₹0.5 if there's no quote in the last 60 s).
 
-## 6. Entry classes (v2), fixed at the moment of entry
+## 6. Entry classes (v3), fixed at the moment of entry
 Checked in this order; the first match wins:
 
 | Class | Checklist at entry | Meaning |
@@ -71,26 +71,70 @@ Checked in this order; the first match wins:
 | **K3 Market-backed break** | 5-min break + heavyweights + VIX | a broad move led by the big banks |
 | **K4 Standard** | any other qualifying entry | the weakest or least specific |
 
-## 7. Exit
-**Current (v1 and v2) — the same for all classes until the per-class exits are agreed.** Whichever comes first:
-- **Stop:** Nifty spot passes the signal candle's low (CALL) or high (PUT). Checked on every live price.
-- **Trend exit:** a 1-min close past EMA 9 (1-min). Checked at each candle close.
-- **Time:** 15 minutes after entry.
+## 7. Exit: four challengers on every entry (v3)
+Every entry opens one paper position **in each model at the same price**. Each model exits by its own rules; all are recorded on the same trade row. v1 (2026-10-05) ran EC0 only.
+
+All models fill exits at the **bid** (or last price − ₹0.5), checked on every live price (~2 s).
+- "Nifty points" are measured from Nifty's price at entry.
+- "%" is the option's bid relative to the entry fill, in % of the premium paid.
+- **Expiry rules:**
+  - near expiry = expiry day or the day before;
+  - the hard exit is 14:45 on expiry day (15:10 otherwise) for EC1, EC2 and EC2+.
+
+### EC0: Champion (the v1 exit)
+- **Stop:** Nifty passes the signal candle's low (CALL) / high (PUT).
+- **Trend exit:** a 1-min close past the 1-min EMA 9.
+- **Time:** 15 minutes.
 - **Hard:** 15:10.
-- **Fill:** at the bid (or last price − ₹0.5).
 
-**Per-class exits — PENDING.**
-- Each class gets its own exit, set from that class's own measured behaviour: best favourable move, worst adverse move, time to peak, and how often it reaches +25 pts.
-- Measured on Jul–Sep 2026 under 1/3/5-min trends, with **7 of 10 items** (history has no futures volume, VWAP or minute-by-minute OI).
-- Then confirmed on live data.
-- The owner approves the exits before they're coded (that will be v3).
+### EC1: Nifty-points rulebook (proposed by Claude, 2026-10-05)
 
-## 8. Safety checks (v2: logged on every signal, never blocking)
+| Rule | Condition |
+|---|---|
+| A Stop | Nifty −12 pts |
+| B Max loss | option P&L ≤ −₹600/lot |
+| C Breakeven | once Nifty +6, the stop moves to the entry price |
+| D Protect | once Nifty +10, exit if the gain falls below 50% of the best |
+| E Spike lock | +15 pts within 2 min → exit if the gain falls below 75% of the best |
+| F No progress | never reached +6 within 8 min (5 near expiry) |
+| G Max hold | 20 min (12 near expiry) |
+| H Option lag | Nifty ≥ +6 but the option bid ≤ the entry fill for 2 min |
+| I Reversal | the opposite side's checklist becomes fully valid (at a 1-min close) |
+| J Hard | 15:10 (14:45 on expiry day) |
+| K Feed | no Nifty price for 60 s → exit at the last bid, flagged |
+
+### EC2: owner's premium-% trail (owner, 2026-10-05)
+- **Loss limit:** the option is down **20%**.
+- **Lock-in:** once the option is up **+15%**, the minimum exit is +15%.
+- **Breathing:** the minimum then rises to **75% of the best profit seen** (25% breathing, measured as a share of the peak). Exit when the option falls below the minimum.
+- **Shared safety rules** (owner: yes): F, G, I, J and K from EC1.
+
+### EC2+: EC2 plus five additions (Claude's proposal; owner: test them)
+1. **Breakeven:** once +8%, the loss limit moves to entry + charges (₹1.5/unit).
+2. **Volatility-adjusted loss limit:** 3 × the option's average absolute 1-min % change over the 10 minutes before entry, kept between 10% and 25% (20% if there's too little data).
+3. **Confirmation:** a loss-limit, breakeven or trail exit fires only after the price has stayed past the level for **10 seconds**.
+4. **Tiered breathing:** keep 75% of the best profit below +40%, 80% from +40% to +80%, 85% above +80%.
+5. **Shrinking loss limit:** if the trade hasn't reached +8% after 5 minutes, the loss limit halves.
+- Plus the shared safety rules F, G, I, J and K.
+
+**What history says (owner informed, 2026-10-05):**
+- On 1,096 checklist signals (Jul–Sep 2026, real option prices, 7 of the 10 items), every model lost about the ₹162/trade cost. Average per trade: EC0 −147, EC1 −153, EC2 −170, EC2+ −158.
+- Before costs, all were close to zero.
+- The exits change the shape of the losses, not the outcome; profit must come from entries.
+- The live test answers whether the full 10-item checklist (VWAP, volume and OI included) changes this.
+
+## 8. Safety checks and signal quality (logged on every signal, never blocking)
 
 | Check | Meaning | OK when |
 |---|---|---|
 | **Room to move** | distance to the biggest OI "wall" (CALL: the strike with the most CE OI within 300 pts above spot; PUT: the most PE OI below) | ≥ 25 pts |
 | **Spread** | the chosen option's ask − bid at entry | ≤ ₹1.0 |
+
+**Signal-quality score (v3):**
+- `green_items` = how many of the 10 checklist items are green (7–10 for a qualifying signal);
+- `quality` = `green_items` + 1 if room-to-move is OK + 1 if the spread is OK (0–12).
+
+The question for the testing phase: **are the top 10–20% of signals by quality profitable, even if the average signal is not?**
 
 After a few weeks, compare trades with and without each check. They become blocking rules only if the live data shows they help, and only with the owner's approval.
 
@@ -104,7 +148,7 @@ After a few weeks, compare trades with and without each check. They become block
 3. Start the **U1 dashboard**: window "premium U1 dashboard", `uv run python scripts/u1_ui.py`, then open http://127.0.0.1:8760.
 4. **Files** (`premium/data/u1/`):
    - `<date>_signals.csv`: every minute where trend + trigger held, with all 10 items, the class, the safety checks, and whether a trade was taken (and why not);
-   - `<date>_trades.csv`: every paper trade, with version and class;
+   - `<date>_trades.csv`: every paper trade, with version, class, quality, and each challenger's exit time, price, reason and ₹ (`EC0_*`, `EC1_*`, `EC2_*`, `EC2P_*`). `pnl_lot` = EC0;
    - `state.json`: live state for the dashboard.
 
 ## 11. How U1 is judged
