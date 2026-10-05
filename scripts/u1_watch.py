@@ -1,4 +1,6 @@
-"""U1 multi-confirmation setup: PAPER-only live watcher (rules: docs/studies/2026-10-05_U1_multi_confirmation.md).
+"""U1 multi-confirmation setup: PAPER-only live watcher. Rules: docs/U1_README.md (single source of truth).
+v1 (2026-10-05): trend on 1-min candles. v2 (from 2026-10-06): trend on 3-min candles; classes K1–K4 and safety
+checks are logged on every signal (logging only; they never change a decision).
 
 Reads the Nifty system's recorder files READ-ONLY (incrementally) and writes only premium/data/u1/.
 Every poll replays the whole day deterministically from the parsed data, so a restart gives the same result.
@@ -24,7 +26,13 @@ OUT = ROOT / "data" / "u1"
 LOT, CHARGES = 65, 1.5
 START, LAST_ENTRY, HARD = time(9, 45), time(14, 30), time(15, 10)
 MAX_TRADES, PAUSE_MIN, TIME_STOP_MIN = 4, 5, 15
+V2_FROM = date(2026, 10, 6)
+WALL_RANGE, ROOM_OK, SPREAD_OK = 300, 25.0, 1.0
 OPT = re.compile(r"NSE_NIFTY(\d\d[A-Z0-9]\d\d)(\d{5})(CE|PE)$")
+
+
+def version(day: date) -> str:
+    return "v2" if day >= V2_FROM else "v1"
 
 
 class Tail:
@@ -133,16 +141,31 @@ def minute_frame(feed: Feed) -> pd.DataFrame:
     macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
     b["macdh"] = macd - macd.ewm(span=9, adjust=False).mean()
     b["fvol_avg20"] = b["fvol"].shift(1).rolling(20).mean()
+    c3 = c.resample("3min", origin="start_day", offset="9h15min").last().dropna()
+    e9, e21 = c3.ewm(span=9, adjust=False).mean(), c3.ewm(span=21, adjust=False).mean()
+    done = c3.index + pd.Timedelta(minutes=2)            # the 1-min bar at whose close the 3-min candle is complete
+    f3 = pd.DataFrame({"ema9_3": e9.to_numpy(), "ema21_3": e21.to_numpy(), "ema9_3_prev": e9.shift(1).to_numpy()},
+                      index=done)
+    f3 = f3[f3.index <= b.index[-1]]
+    if len(f3):
+        b = b.join(f3.reindex(b.index, method="ffill"))
+    else:
+        b["ema9_3"] = b["ema21_3"] = b["ema9_3_prev"] = np.nan
     return b
 
 
-def components(b: pd.DataFrame, i: int, feed: Feed, d: int) -> dict[str, Any]:
-    """Every U1 condition for direction d (+1 CALL, -1 PUT) at completed bar i (needs i >= 26)."""
+def components(b: pd.DataFrame, i: int, feed: Feed, d: int, ver: str = "v1") -> dict[str, Any]:
+    """Every U1 condition for direction d (+1 CALL, -1 PUT) at completed bar i (needs i >= 26).
+    v2: EMA order and slope come from completed 3-min candles; everything else is unchanged."""
     r, p, p5, b3 = b.iloc[i], b.iloc[i - 1], b.iloc[i - 5], b.iloc[i - 3]
     prev5 = b.iloc[i - 5:i]
     above_vwap = bool(d * (r.fpx - r.vwap) > 0)
-    ema_order = bool(d * (r.ema9 - r.ema21) > 0)
-    ema_slope = bool(d * (r.ema9 - p.ema9) > 0)
+    if ver == "v2":
+        ema_order = bool(d * (r.ema9_3 - r.ema21_3) > 0)
+        ema_slope = bool(d * (r.ema9_3 - r.ema9_3_prev) > 0)
+    else:
+        ema_order = bool(d * (r.ema9 - r.ema21) > 0)
+        ema_slope = bool(d * (r.ema9 - p.ema9) > 0)
     band = bool(((r.close > r.bb_up) if d > 0 else (r.close < r.bb_lo)) and r.bw > p5.bw)
     brk = bool((r.close > prev5.high.max()) if d > 0 else (r.close < prev5.low.min()))
     if d > 0:
@@ -166,17 +189,46 @@ def components(b: pd.DataFrame, i: int, feed: Feed, d: int) -> dict[str, Any]:
             "confirmations": sum(conf.values())}
 
 
-def evaluate(b: pd.DataFrame, i: int, feed: Feed) -> dict[str, Any] | None:
+def classify(c: dict[str, Any]) -> str:
+    """Entry class from the checklist at entry (README §6); first match wins."""
+    if c["trigger_band"] and c["trigger_break"] and c["confirmations"] >= 4:
+        return "K1"
+    if c["trigger_band"] and c["volume"]:
+        return "K2"
+    if c["trigger_break"] and c["heavyweights"] and c["vix"]:
+        return "K3"
+    return "K4"
+
+
+def room_to_move(b: pd.DataFrame, i: int, feed: Feed, d: int) -> float | None:
+    """Distance (pts) to the biggest OI wall in the trade's direction within WALL_RANGE (README §8)."""
+    oi = feed.oi_at(b.index[i] + timedelta(minutes=1))
+    if not oi:
+        return None
+    spot = float(b.iloc[i].close)
+    if d > 0:
+        cand = {k: v[0] for k, v in oi.items() if spot < k <= spot + WALL_RANGE}
+    else:
+        cand = {k: v[1] for k, v in oi.items() if spot - WALL_RANGE <= k < spot}
+    if not cand:
+        return None
+    wall = max(cand, key=lambda k: cand[k])
+    return round(abs(wall - spot), 1)
+
+
+def evaluate(b: pd.DataFrame, i: int, feed: Feed, ver: str = "v1") -> dict[str, Any] | None:
     """Layers 1–2 at completed bar i; returns the record (with confirmations) or None."""
     if i < 26:
         return None
-    comp = {d: components(b, i, feed, d) for d in (1, -1)}
+    comp = {d: components(b, i, feed, d, ver) for d in (1, -1)}
     live = [d for d in (1, -1) if comp[d]["trend"] and comp[d]["trigger"]]
     if len(live) != 1:
         return None
     d = live[0]
     c, r = comp[d], b.iloc[i]
-    return {"minute": b.index[i].strftime("%H:%M"), "side": "CALL" if d > 0 else "PUT", "dir": d,
+    room = room_to_move(b, i, feed, d)
+    return {"minute": b.index[i].strftime("%H:%M"), "version": ver, "side": "CALL" if d > 0 else "PUT", "dir": d,
+            "class": classify(c), "room_pts": room, "room_ok": None if room is None else room >= ROOM_OK,
             "close": round(float(r.close), 2), "trigger_band": c["trigger_band"], "trigger_break": c["trigger_break"],
             "rsi": round(float(r.rsi), 1), "macd_hist": round(float(r.macdh), 2),
             "fvol_x": round(float(r.fvol / r.fvol_avg20), 2) if r.fvol_avg20 else None,
@@ -186,6 +238,7 @@ def evaluate(b: pd.DataFrame, i: int, feed: Feed) -> dict[str, Any] | None:
 
 def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     b = minute_frame(feed)
+    ver = version(feed.day)
     signals: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     pos: dict[str, Any] | None = None
@@ -227,11 +280,17 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
         bar_t = b.index[completed_i].time()
         if not (START <= bar_t <= LAST_ENTRY):
             continue
-        rec = evaluate(b, completed_i, feed)
+        rec = evaluate(b, completed_i, feed, ver)
         if rec is None:
             continue
         rec["taken"] = False
         rec["why_not"] = ""
+        side_k = "CE" if rec["dir"] > 0 else "PE"
+        atm = int(round(spot / 50) * 50)
+        atm_keys = sorted(k for k in fno if (mm := OPT.match(k)) and int(mm.group(2)) == atm and mm.group(3) == side_k)
+        sq = feed.quote(atm_keys[0], ts) if atm_keys else None
+        rec["spread"] = round(sq[1] - sq[0], 2) if sq else None
+        rec["spread_ok"] = None if sq is None else (sq[1] - sq[0]) <= SPREAD_OK
         if rec["confirmations"] < 3:
             rec["why_not"] = "confirmations<3"
         elif len(trades) >= MAX_TRADES:
@@ -248,7 +307,9 @@ def run_day(feed: Feed) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dic
                 key = keys[0]
                 q = feed.quote(key, ts)
                 px = q[1] if q else float(fno[key]) + 0.5
-                pos = {"date": str(feed.day), "signal_min": rec["minute"], "side": rec["side"], "key": key,
+                pos = {"date": str(feed.day), "version": ver, "class": rec["class"], "signal_min": rec["minute"],
+                       "side": rec["side"], "key": key, "room_pts": rec["room_pts"], "room_ok": rec["room_ok"],
+                       "spread": rec["spread"], "spread_ok": rec["spread_ok"],
                        "confirmations": rec["confirmations"], "entry": ts.strftime("%H:%M:%S"),
                        "entry_px": round(px, 2), "nifty": spot, "dir": rec["dir"], "entry_dt": ts,
                        "stop": rec["sig_low"] if rec["dir"] > 0 else rec["sig_high"],
@@ -262,13 +323,14 @@ def write_state(feed: Feed, signals: list[dict[str, Any]], trades: list[dict[str
                 pos: dict[str, Any] | None) -> None:
     """data/u1/state.json for the U1 dashboard: open position (marked at the bid), checklist, recent bars."""
     b = minute_frame(feed)
+    ver = version(feed.day)
     ts, idx, fno = feed.ltp[-1]
     complete = b.iloc[:-1]                                   # the last bar is still forming
     check = None
     if len(complete) > 26:
         i = len(complete) - 1
         check = {"minute": complete.index[i].strftime("%H:%M"),
-                 "CALL": components(b, i, feed, 1), "PUT": components(b, i, feed, -1)}
+                 "CALL": components(b, i, feed, 1, ver), "PUT": components(b, i, feed, -1, ver)}
     open_pos = None
     if pos is not None:
         q = feed.quote(pos["key"], ts)
@@ -280,7 +342,8 @@ def write_state(feed: Feed, signals: list[dict[str, Any]], trades: list[dict[str
     bars = [{"t": int(pd.Timestamp(t).timestamp()), "o": r.open, "h": r.high, "l": r.low, "c": r.close,
              "ema9": r.ema9, "ema21": r.ema21, "bb_up": r.bb_up, "bb_lo": r.bb_lo} for t, r in tail.iterrows()]
     state = {"updated": datetime.now().isoformat(timespec="seconds"), "feed_ts": ts.isoformat(timespec="seconds"),
-             "day": str(feed.day), "nifty": idx.get("NSE_NIFTY"), "vix": idx.get("NSE_INDIAVIX"),
+             "day": str(feed.day), "version": ver, "trend_tf": "3-min" if ver == "v2" else "1-min",
+             "nifty": idx.get("NSE_NIFTY"), "vix": idx.get("NSE_INDIAVIX"),
              "open": open_pos, "checklist": check, "trades": trades, "signals": signals[-30:],
              "bars": [{k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in x.items()} for x in bars]}
     tmp = OUT / "state.tmp"
@@ -297,7 +360,8 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     feed = Feed(day)
     shown = 0
-    print(f"U1 paper watcher for {day} (PAPER ONLY; reads the recorder read-only). Entries {START}–{LAST_ENTRY}.")
+    print(f"U1 {version(day)} paper watcher for {day} (PAPER ONLY; reads the recorder read-only). "
+          f"Entries {START}–{LAST_ENTRY}. Rules: docs/U1_README.md")
     while True:
         feed.update()
         if feed.ltp:
