@@ -52,3 +52,19 @@
 **Outcome:**
 - ROBUST → a paper-portfolio candidate in premium (monthly rebalance; live paper tracking to be built), with the owner's approval.
 - Otherwise → failed, with the reason.
+
+## Implementation notes (committed with the code, 2026-10-05, BEFORE any result was run)
+
+These come from the data-quality check only; no strategy output had been seen.
+
+1. **Universe** = 49 stocks: the snapshot has 50 stock symbols, but **BSE is not a Nifty 50 member** (the Nifty system added it for its stock pilot), so it is dropped. The "52" in the rules above was a miscount.
+2. **Cross-check against the snapshot (2021–26):** all 49 stocks have ≤ 0.83% of days differing by > 2 percentage points, under the 1% exclusion bar, so **none are excluded**.
+3. **Yahoo faults found and the fixes, set before any result:**
+   - a glitch on **2005-07-28/29** across ~15 stocks → **data before 2005-08-01 is dropped** (warm-up only);
+   - **(b)** where the snapshot overlaps (Oct 2021 onward), a day on which Yahoo's return differs from the snapshot's by > 10 pp **takes the snapshot's return**. Example: TRENT on 2026-01-01 is −33% in Yahoo (a mis-applied adjustment) but +0.4% in the snapshot.
+   - **(c)** elsewhere, any one-day |return| > **35%** → 0, as an unadjusted corporate action or bad print. Cases: the Bajaj Auto/Finserv demerger 2008, the Adani Enterprises demerger 2015, L&T 2006, Nestlé 2010, NIFTYBEES' 2019 split glitch, TMPV's demerger on 2025-10-14. Real 2008 moves (Hindalco +32%, JSW +34%) are below 35% and stay.
+   - The counts of fixes are printed by the runner.
+4. **Benchmark:** NIFTYBEES (total return) exists only from 2009-01-02. Before that: ^NSEI price return + 1.2%/yr dividend estimate.
+5. **The regime signal** uses ^NSEI price (close vs its 200-day SMA) on the ranking day.
+6. **Execution:** rank at month-end close i; trade at close i+1; weights drift between rebalances. Costs apply to traded weight: buy 0.30%, sell 0.40%, ×2 for robustness. Cash earns 0%.
+7. **The ROBUST "without top 3" test:** the 3 stocks with the largest cumulative contribution (weight × return, 2005–26) are removed from the universe. Both the strategy and EW are rerun; the strategy must beat EW in both periods.
