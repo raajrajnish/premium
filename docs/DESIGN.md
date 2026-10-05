@@ -41,7 +41,7 @@ Find trading approaches that earn a **steady premium with controlled, known-in-a
 | **S1** | **Defined-risk option selling on Nifty** (credit spreads / iron condors, weekly) | Nifty options in the snapshot (≈ ±3% of spot; far wings sometimes missing; see S1 for handling) | **FAILED** 2026-10-04 |
 | S2 | **Covered calls** on Nifty (index proxy) / large stocks | snapshot (index, options, Nifty 50 daily) | planned |
 | S3 | **Trend-following on futures** (Nifty/Bank Nifty futures; MCX gold/silver/crude if available) | Groww NSE futures 2021→; Yahoo global futures × USDINR as the MCX proxy | **FAILED** 2026-10-04 (provisional data; verdict final, see study) |
-| S4 | **Monthly factor investing** (momentum / quality / low-volatility) in Nifty 50 | snapshot (Nifty 50 daily) | planned |
+| S4 | **Monthly factor investing** (momentum / low-volatility; quality not testable without fundamentals) in Nifty 50 | Yahoo adjusted daily 2005→ (current Nifty 50) | **not ROBUST** 2026-10-05; F1R (momentum + 200-day regime) = single-period lead, survivorship unresolved |
 | (S5) | Cash-futures arbitrage (low return; for idle cash only) | futures data | maybe |
 
 ## Known data faults (inherited from the snapshot; learned in the Nifty system)
