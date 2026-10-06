@@ -12,7 +12,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "u1"
 DATA_U2 = ROOT / "data" / "u2"
-DATA_U3 = ROOT / "data" / "u3"          # U3 panel (additive; docs/U3_README.md)          # U2 panel (additive; docs/U2_README.md)
+DATA_U3 = ROOT / "data" / "u3"
+DATA_U4 = ROOT / "data" / "u4"          # U4 panel (additive; docs/U4_README.md)          # U3 panel (additive; docs/U3_README.md)          # U2 panel (additive; docs/U2_README.md)
 PORT = 8760
 
 
@@ -118,6 +119,23 @@ def u3_stats() -> dict[str, Any]:
     return {"grid": list(grid.values()), "per_day": per_day}
 
 
+def u4_stats() -> dict[str, Any]:
+    """U4 all-time per variant × strategy (MAIN and threshold variants)."""
+    rows: list[dict[str, Any]] = []
+    for f in sorted(DATA_U4.glob("*_trades.csv")):
+        with f.open(encoding="utf-8") as fh:
+            rows += list(csv.DictReader(fh))
+    grid: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        g = grid.setdefault(r["variant"], {"variant": r["variant"], "total": 0, "trades": 0, "wins": 0})
+        x = round(float(r["pnl_lot"]))
+        g[r["strat"]] = g.get(r["strat"], 0) + x
+        g["total"] += x
+        g["trades"] += 1
+        g["wins"] += int(x > 0)
+    return {"grid": list(grid.values())}
+
+
 def _cum(p: list[float]) -> list[float]:
     out, s = [], 0.0
     for x in p:
@@ -176,6 +194,20 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
  <div class="card" style="margin-top:14px"><h2>U1 vs U2 by day (₹/lot)</h2><table id="u2vs"></table><div class="tag" id="u2all" style="margin-top:6px"></div></div>
 </div>
 </main>
+<header style="border-top:1px solid var(--line)"><h1>U4 · microstructure & relative value</h1><span class="paper">PAPER ONLY</span>
+<span class="tag" id="u4meta">loading…</span></header>
+<main>
+<div>
+ <div class="card"><h2>Live features (+ = upward pressure)</h2><div id="u4feat">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Decisions (MAIN)</h2><table id="u4dec"></table></div>
+ <div class="card" style="margin-top:14px"><h2>U4 trades today (MAIN)</h2><table id="u4tr"></table></div>
+</div>
+<div>
+ <div class="card"><h2>Strategies (MAIN)</h2><div id="u4status">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Variants (all-time ₹/lot)</h2><table id="u4grid"></table>
+  <div class="tag" style="margin-top:6px">Sizing is logged only ("would-be lots") until a strategy has 30+ trades and the owner approves.</div></div>
+</div>
+
 <header style="border-top:1px solid var(--line)"><h1>U3 · research regime engine</h1><span class="paper">PAPER ONLY</span>
 <span class="tag" id="u3meta">loading…</span></header>
 <main>
@@ -259,6 +291,19 @@ async function tick3(){
  document.getElementById('u3grid').innerHTML='<tr><th>Variant</th><th>FADE</th><th>TREND</th><th>LAST</th><th>Total</th><th>Trades</th></tr>'+(a.grid||[]).map(g=>`<tr><td>${g.variant}</td>`+['FADE','TREND','LAST','total'].map(k=>`<td class="${cls(g[k])}">${g[k]!=null?fmt(g[k]):'—'}</td>`).join('')+`<td>${g.trades}</td></tr>`).join('');
 }
 tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);tick3();setInterval(tick3,5000);
+async function tick4(){
+ let s,a;try{[s,a]=await Promise.all([fetch('/api/u4/state').then(r=>r.json()),fetch('/api/u4/stats').then(r=>r.json())]);}catch(e){return;}
+ if(!s||!s.day){document.getElementById('u4meta').textContent='U4 watcher not running yet';return;}
+ const age=(Date.now()-new Date(s.updated).getTime())/1000;
+ document.getElementById('u4meta').innerHTML=`${s.day} · ${s.version} · feed ${s.feed_ts?.slice(11)} `+(age>90?'<span class="stale">· watcher not updating ('+Math.round(age)+'s)</span>':'· live');
+ const f=s.features||{};const z=(v)=>v==null?'—':`<b class="${v>0?'pos':v<0?'neg':''}">${v>0?'+':''}${v}</b>`;
+ document.getElementById('u4feat').innerHTML=`Multi-level order flow (z): ${z(f.mlofi_z)} · option-book pressure (z): ${z(f.book_z)} · micro-price lean (z): ${z(f.lean_z)}<br>Hawkes activity vs normal: up ${f.casc_up??'—'}× · down ${f.casc_dn??'—'}× ${(f.casc_up>=2||f.casc_dn>=2)?'<span class="neg">· cascade</span>':''}<br>Nifty vs heavyweights (Kalman z): ${z(f.spread_z)} ${f.spread_z>=2?'(Nifty rich)':f.spread_z<=-2?'(Nifty cheap)':''} · half-life ${f.half_life??'—'} min<br>Volatility (Yang–Zhang): ${f.sigma1m??'—'} pts per minute`;
+ const st=s.status||{};document.getElementById('u4status').innerHTML=['FLOW','SPREAD'].map(k=>{const x=st[k]||{};return `<div style="margin-bottom:6px"><b>${k}</b>: `+(x.mode==='in trade'?`${x.side} ${x.key.replace('NSE_','')} @ ${x.entry_px} (${x.entry}) · <b class="${cls(x.pnl_lot)}">${fmt(x.pnl_lot)}</b>`:`idle${x.blocked?' · <span class="neg">'+x.blocked+'</span>':''}`)+` · today ${x.trades||0} trades ${fmt(x.day_pnl)}</div>`;}).join('');
+ const dec=(s.decisions||[]).slice().reverse();document.getElementById('u4dec').innerHTML=dec.length?'<tr><th>Time</th><th>Strategy</th><th>Side</th><th>Decision</th><th>Would-be lots</th></tr>'+dec.map(x=>`<tr><td>${x.time}</td><td>${x.strat}</td><td>${x.side}</td><td class="${x.decision==='ENTER'?'pos':'neg'}">${x.decision}${x.why?': '+x.why:''}</td><td>${x.would_lots??''}</td></tr>`).join(''):'<tr><td>No signals yet</td></tr>';
+ const tr=s.trades||[];document.getElementById('u4tr').innerHTML=tr.length?'<tr><th>Strat</th><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>Best</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.strat}</td><td>${t.side}</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td>${fmt(t.best_lot)}</td><td class="${cls(t.pnl_lot)}">${fmt(t.pnl_lot)}</td></tr>`).join(''):'<tr><td>No U4 trades yet today</td></tr>';
+ document.getElementById('u4grid').innerHTML='<tr><th>Variant</th><th>FLOW</th><th>SPREAD</th><th>Total</th><th>Trades</th><th>Wins</th></tr>'+(a.grid||[]).map(g=>`<tr><td>${g.variant}</td>`+['FLOW','SPREAD','total'].map(k=>`<td class="${cls(g[k])}">${g[k]!=null?fmt(g[k]):'—'}</td>`).join('')+`<td>${g.trades}</td><td>${g.wins}</td></tr>`).join('');
+}
+tick4();setInterval(tick4,5000);
 </script></body></html>"""
 
 
@@ -283,6 +328,11 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/u2/state":
             f = DATA_U2 / "state.json"
             self._send(f.read_bytes() if f.exists() else b"{}", "application/json")
+        elif self.path == "/api/u4/state":
+            f = DATA_U4 / "state.json"
+            self._send(f.read_bytes() if f.exists() else b"{}", "application/json")
+        elif self.path == "/api/u4/stats":
+            self._send(json.dumps(u4_stats()).encode(), "application/json")
         elif self.path == "/api/u3/state":
             f = DATA_U3 / "state.json"
             self._send(f.read_bytes() if f.exists() else b"{}", "application/json")

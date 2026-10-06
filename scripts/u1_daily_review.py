@@ -29,6 +29,7 @@ MODELS = ("EC0", "EC1", "EC2", "EC2P")
 TIME_EXITS = {"time", "F no progress", "G max hold"}
 DATA_U2 = ROOT / "data" / "u2"
 DATA_U3 = ROOT / "data" / "u3"
+DATA_U4 = ROOT / "data" / "u4"
 LABEL = {"EC0": "EC0", "EC1": "EC1", "EC2": "EC2", "EC2P": "EC2+"}
 HYP = {
     "H1": "Entry right after a burst candle → the option dips below the entry price within 5 min",
@@ -343,6 +344,7 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
     head += missed_signals(signals, b)
     head += u2_section(day, trades, models)
     head += u3_section(day)
+    head += u4_section(day)
     fac = factor_day(day)
     head += factor_md(fac)
     head.append("\n## Day summary (written per the skill)\n\n_TODO_\n")
@@ -482,6 +484,58 @@ def u3_section(day: date) -> list[str]:
     return out
 
 
+def u4_section(day: date) -> list[str]:
+    """U4 (microstructure & relative value): variants, MAIN trades with their features, decisions."""
+    tf, df_ = DATA_U4 / f"{day}_trades.csv", DATA_U4 / f"{day}_decisions.csv"
+    out = ["\n## U4 (microstructure & relative value)\n"]
+    hk = DATA_U4 / f"{day}_hawkes.json"
+    if hk.exists():
+        h = json.loads(hk.read_text(encoding="utf-8"))
+        out.append(
+            f"- **Hawkes fit** (days {', '.join(h.get('days', []))}):"
+            f" up n={h['up']['n']}, decay {1 / h['up']['beta']:.0f}s; "
+            f"down n={h['down']['n']}, decay {1 / h['down']['beta']:.0f}s"
+        )
+    if not tf.exists() or tf.stat().st_size <= 2:
+        return [*out, "_U4 did not trade (or did not run) on this day._"]
+    t = pd.read_csv(tf)
+    dec = pd.read_csv(df_) if df_.exists() and df_.stat().st_size > 2 else pd.DataFrame()
+    out += ["| Variant | FLOW ₹ | SPREAD ₹ | Total ₹ | Trades | Wins |", "|---|---|---|---|---|---|"]
+    for v, gv in t.groupby("variant", sort=False):
+        per = {s_: gv[gv.strat == s_].pnl_lot.sum() if (gv.strat == s_).any() else None for s_ in ("FLOW", "SPREAD")}
+        out.append(
+            f"| {v} | {fmt(per['FLOW'])} | {fmt(per['SPREAD'])} | **{fmt(gv.pnl_lot.sum())}** | {len(gv)} | "
+            f"{int((gv.pnl_lot > 0).sum())} |"
+        )
+    main = t[t.variant == "MAIN"]
+    sp = main[main.strat == "SPREAD"]
+    if len(sp):
+        tl = sp[sp.reason.str.startswith("target") & (sp.pnl_lot <= 0)]
+        out.append(
+            f"\n- **SPREAD target reached at a loss:** {len(tl)} of {int(sp.reason.str.startswith('target').sum())} "
+            "(the gap closed through the heavyweights moving, not Nifty)"
+        )
+    if not dec.empty:
+        out.append(
+            "- **MAIN decisions:** "
+            + ", ".join(f"{s_} {d_} {n}" for (s_, d_), n in dec.groupby(["strat", "decision"]).size().items())
+        )
+    if len(main):
+        out += [
+            "\n| # | Strat | Side | Entry | OFI z | Lean z | Spread z | Exit (why) "
+            "| Slippage | Would-be lots | Best ₹ | ₹ |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for k, (_, r) in enumerate(main.iterrows(), 1):
+            out.append(
+                f"| {k} | {r.strat} | {r.side} | {r.entry} @ {r.entry_px} | {r.get('mlofi_z', '')} | "
+                f"{r.get('lean_z', '')} | {r.get('spread_z', '')} | {r.exit} ({r.reason}) | "
+                f"{r.get('entry_slippage', '')} | {r.get('would_lots', '')} | {fmt(r.best_lot)} | "
+                f"**{fmt(r.pnl_lot)}** |"
+            )
+    return out
+
+
 def q7_news(day: date, t: pd.DataFrame) -> list[str]:
     """Q7: news and events. The morning card, MAIN vs NEWS, and MAIN's trades split by the logged news flags."""
     out = ["\n## Q7. News and events (U2)\n"]
@@ -517,7 +571,24 @@ def q7_news(day: date, t: pd.DataFrame) -> list[str]:
     return out
 
 
-FACTORS = [*u2h.CONT, "trend", "trigger", "health"]
+# U4 features (docs/U4_README.md §2) join the same scorecard; value = expected direction ("+" = expect Nifty up)
+U4_FEATURES = {
+    "u4_mlofi": ("mlofi_z", 1, 1.0),
+    "u4_book": ("book_z", 1, 1.0),
+    "u4_lean": ("lean_z", 1, 1.0),
+    "u4_hawkes": ("hawkes_dir", 1, 0.3),
+    "u4_spread": ("spread_z", -1, 1.0),
+}
+U4_NAMES = {
+    "u4_mlofi": "U4 multi-level OFI",
+    "u4_book": "U4 option-book pressure",
+    "u4_lean": "U4 micro-price lean",
+    "u4_hawkes": "U4 Hawkes direction",
+    "u4_spread": "U4 Kalman spread (− = rich)",
+}
+U2_FACTORS = [*u2h.CONT, "trend", "trigger", "health"]
+FACTORS = [*U2_FACTORS, *U4_FEATURES]
+ALL_NAMES = {**u2h.NAMES, **U4_NAMES}
 
 
 def factor_day(day: date) -> dict[str, Any]:
@@ -534,7 +605,7 @@ def factor_day(day: date) -> dict[str, Any]:
     per_min = per_min.between_time("09:30", "15:05")
     nxt = per_min.nifty.shift(-3) - per_min.nifty
     out: dict[str, Any] = {}
-    for f in FACTORS:
+    for f in U2_FACTORS:
         col = "health" if f == "health" else f"z_{f}"
         x = per_min[col]
         ok = x.notna() & nxt.notna()
@@ -552,6 +623,27 @@ def factor_day(day: date) -> dict[str, Any]:
             "hits": int(sum(1 for m_ in moves if m_ > 0)),
             "pos_day": bool(np.mean(moves) > 0) if moves else None,
         }
+    ff = DATA_U4 / f"{day}_features.csv"
+    if ff.exists():
+        fm = pd.read_csv(ff, index_col=0, parse_dates=True).between_time("09:30", "15:05")
+        nx = fm.nifty.shift(-3) - fm.nifty
+        for k, (col, sign, th) in U4_FEATURES.items():
+            if col not in fm.columns:
+                continue
+            x = sign * fm[col]
+            ok = x.notna() & nx.notna()
+            if ok.sum() < 20:
+                continue
+            up, dn = ok & (x >= th), ok & (x <= -th)
+            moves = list(nx[up]) + list(-nx[dn])
+            out[k] = {
+                "n_min": int(ok.sum()),
+                "rho": round(float(x[ok].rank().corr(nx[ok].rank())), 3),
+                "events": len(moves),
+                "sum_move": float(np.sum(moves)) if moves else 0.0,
+                "hits": int(sum(1 for m_ in moves if m_ > 0)),
+                "pos_day": bool(np.mean(moves) > 0) if moves else None,
+            }
     return out
 
 
@@ -568,7 +660,7 @@ def factor_md(fac: dict[str, Any]) -> list[str]:
         avg = v["sum_move"] / v["events"] if v["events"] else None
         hit = f"{100 * v['hits'] / v['events']:.0f}%" if v["events"] else "—"
         out.append(
-            f"| {u2h.NAMES.get(f, f)} | {v['n_min']} | {v['rho']:+.2f} | {v['events']} | "
+            f"| {ALL_NAMES.get(f, f)} | {v['n_min']} | {v['rho']:+.2f} | {v['events']} | "
             f"{'—' if avg is None else f'{avg:+.1f}'} | {hit} |"
         )
     return out
@@ -623,7 +715,7 @@ def factor_scorecard() -> str:
             else ("reliable ✅" if lo > 0.5 and a["days_pos"] > a["days"] / 2 else "not reliable")
         )
         lines.append(
-            f"| {u2h.NAMES.get(k, k)} | {n} | {a['sum'] / n if n else 0:+.2f} | "
+            f"| {ALL_NAMES.get(k, k)} | {n} | {a['sum'] / n if n else 0:+.2f} | "
             f"{100 * a['hits'] / n if n else 0:.0f}% | {100 * lo:.0f}–{100 * hi:.0f}% | "
             f"{a['days_pos']}/{a['days']} | {np.mean(a['rho']):+.2f} | {status} |"
         )
