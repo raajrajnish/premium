@@ -42,3 +42,31 @@ For each rule × exit model:
 **Useful** = ENTER trades beat ALL trades by ≥ ₹50/trade on average **and** ENTER's average ₹ > 0 under at least one exit model, with ≥ 30 ENTER trades in September.
 - Useful → shadow on live U1 signals (prediction shown on the dashboard, nothing blocked) for 1–2 weeks, then the owner decides whether it gates entries.
 - Not useful → recorded as failed, with the reason.
+
+## Result (run 2026-10-06 13:25, `data/results/u1_path_model_20261006_1325`; script committed before the run): NOT USEFUL
+
+Signals: 1,096 (TRAIN 741 over 44 days; TEST 355 over 20 days). GOOD rate: TRAIN 31%, TEST 34%.
+
+**Average ₹ per trade on TEST (September):**
+
+| Rule | ENTER (n) | ENTER GOOD% | ENTER EC0 / EC1 / EC2 / EC2+ | ALL signals EC0 / EC1 / EC2 / EC2+ |
+|---|---|---|---|---|
+| R2 logistic top 30% | 100 | 34% | −153 / −152 / −227 / −169 | −133 / −135 / −177 / −158 |
+| R1 kNN, EV > 0 under EC0 | 32 | 38% | −244 / −138 / −266 / −251 | same |
+| R1 kNN, EV > 0 under EC1 | 29 | 38% | −210 / −120 / −165 / −154 | same |
+| R1 kNN, EV > 0 under EC2 | 15 | 33% | −46 / −77 / −154 / **+119** | same |
+| R1 kNN, EV > 0 under EC2+ | 36 | 33% | −152 / −27 / −215 / −185 | same |
+
+**Reading:**
+1. **It learned TRAIN, not the market.**
+   - On TRAIN, the logistic top 30% looked clearly better: 41% GOOD vs 26% for the rest, about ₹80/trade better.
+   - On TEST, the same rule picked trades that were **no better than the rest**: 34% vs 33% GOOD, and *worse* in ₹.
+   - Ranked into quartiles by the model's prediction, TEST outcomes don't line up at all; the *lowest*-ranked quarter did best.
+2. **No rule met the pre-declared bar:** ≥ ₹50/trade better than ALL, ENTER average > 0, at least 30 trades. The one positive cell (+₹119, kNN-EC2 rule scored under EC2+) has only 15 trades and is the rule's *mismatched* exit, so it's noise.
+3. **The strongest-looking inputs** (distance from the Bollinger mid, VIX level, time of day) didn't carry over to September.
+
+**Verdict:** with these features, a signal's path **can't be predicted** well enough to choose entries. This agrees with the earlier finding that U1's historical signals are close to chance. Two things could still change it, and they can only be measured live:
+- the three live-only items (futures VWAP, volume surge, options OI);
+- order-book information (bid/ask quantities, the 45-second follow-through check).
+
+The live signal log keeps collecting them.

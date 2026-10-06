@@ -143,7 +143,8 @@ for day, b in N.groupby(N.index.date):
             feat = {"band": band, "brk": brk, "strength": st, "heavy": hv, "vixok": vx, "conf": conf,
                     "K1": cls == "K1", "K3": cls == "K3", "K4": cls == "K4",
                     "atr": atr, "mabs30": float(r.mabs30),
-                    "mom5": d * (r.close - b.close.iloc[i - 5]) / atr, "mom15": d * (r.close - b.close.iloc[i - 15]) / atr,
+                    "mom5": d * (r.close - b.close.iloc[i - 5]) / atr,
+                    "mom15": d * (r.close - b.close.iloc[i - 15]) / atr,
                     "bn15": d * (r.bn / b.bn.iloc[i - 15] - 1) * 100,
                     "trend3": d * (r.e9 - r.e21) / atr, "dist_mid": d * (r.close - r.mid) / atr,
                     "range_pos": pos if d > 0 else 1 - pos, "from_open": d * (r.close / open0 - 1) * 100,
@@ -207,7 +208,7 @@ print(f"signals with option data: {len(df)} | TRAIN {len(tr)} ({tr.day.nunique()
 # ---------------------------------------------------------------- model 1: k nearest neighbours (k = 50)
 def knn_predict(Zq, qdays, Zref, ref, k=50, exclude_same_day=False):
     out = []
-    for z, dday in zip(Zq, qdays):
+    for z, dday in zip(Zq, qdays, strict=True):
         dist = np.sqrt(((Zref - z) ** 2).sum(axis=1))
         if exclude_same_day:
             dist = np.where(ref.day.to_numpy() == dday, np.inf, dist)
@@ -248,7 +249,8 @@ def judge(name, enter, data):
     return res
 
 
-out = {"R2 logistic top-30% (threshold from TRAIN)": {"TRAIN": judge("", p_tr >= thr, tr), "TEST": judge("", p_te >= thr, te)}}
+out = {"R2 logistic top-30% (threshold from TRAIN)": {"TRAIN": judge("", p_tr >= thr, tr),
+                                                       "TEST": judge("", p_te >= thr, te)}}
 for m in MODELS:
     out[f"R1 kNN EV>0 under {m}"] = {"TRAIN": judge("", k_tr[f"ev_{m}"].to_numpy() > 0, tr),
                                     "TEST": judge("", k_te[f"ev_{m}"].to_numpy() > 0, te)}
