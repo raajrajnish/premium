@@ -79,6 +79,15 @@ Status as of **2026-10-07** (U4 v0.1). Every item needs the owner's explicit go-
 - **Kalman δ = 10⁻⁹** per 10 s and the **cascade measured against λ̄** were set before the first run. The reasons are in `docs/U4_README.md`.
 - **First scorecard reading (6 Oct, one day):** none of U4's features clearly led Nifty over 3 minutes; Hawkes direction leaned slightly the wrong way (ρ −0.14). Watch this over several days before changing anything.
 
+### E2. What the published evidence implies for U4 (owner's note, 2026-10-07)
+- **The methods work empirically, but only with institutional-grade data** (tick-by-tick order-book events) and strict statistical controls against overfitting.
+- **OFI mostly explains the price change in the same interval.** The studies show a robust, linear link between OFI and the price change at the same time. Predictive power for the **next** move is much weaker and decays within seconds. A trading edge from OFI needs acting within seconds on event-level data. That fits U4's first scorecard reading (little 3-minute predictive power on 10-second snapshots).
+- **The Hawkes results on NSE used tick data.** Our price-tick stand-in (about 2 s) is an approximation (see B3).
+- **Overfitting is the main live-failure risk**, so the **DSR/PBO judge (A2) is required**, not optional: about 25 variants run across U1–U4.
+- **CPCV** is designed for long histories. Under our live-data approach, its equivalent is purged cross-validation **across live days** once there are enough (part of A2).
+- **Almgren–Chriss** impact holds up for large institutional orders. It is irrelevant at 1–3 lots (D1 stays parked).
+- **Main implication:** our binding limit is **data resolution and cost**, not the formulas. If U4's features show any lead in the live factor scorecard, **C2 (an event-level recorder in premium)** is the highest-value upgrade. Institutional edge from these methods also relies on speed and low costs, which is why the U5 ideas focus on costs and the slower pendulum effect.
+
 ## Suggested order
 1. **A3** (small, useful now).
 2. **B2** (if slippage shows money left on the table).
