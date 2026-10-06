@@ -40,3 +40,17 @@ def test_top_factors_sign_follows_side() -> None:
     assert plus[0] == "+ volume push" and minus[0] == "− VIX"
     plus_p, minus_p = hl.top_factors(row, -1)
     assert plus_p[0] == "+ VIX" and minus_p[0] == "− volume push"
+
+
+def test_news_flags_windows_and_bias() -> None:
+    from datetime import datetime, timedelta
+
+    import u2_watch as w
+
+    t = datetime(2026, 10, 7, 10, 0)
+    n = w.News(card={"bias": "negative"}, open_px=22500.0, gap_pct=-0.7,
+               windows=[(t - timedelta(minutes=10), t + timedelta(minutes=15), t, "RBI")], bias_dir=-1)
+    assert n.in_window(t - timedelta(minutes=5)) == "RBI" and n.in_window(t + timedelta(minutes=16)) is None
+    assert n.event_soon(t - timedelta(minutes=1)) and not n.event_soon(t - timedelta(minutes=5))
+    f = n.flags(t, 1, vix_guard=False)
+    assert f["gap_with"] == "against" and f["bias_with"] == "against" and f["event_window"] == "RBI"

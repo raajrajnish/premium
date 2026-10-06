@@ -417,6 +417,37 @@ def u2_section(day: date, u1_trades: pd.DataFrame, models: list[str]) -> list[st
             f"| {k} | {r.side} | {r.signal_min} | {r.entry} @ {r.entry_px} | {r.health_entry:+.2f} | "
             f"{r.exit} ({r.reason}) | {r.health_exit:+.2f} | {fmt(r.best_lot)} | **{fmt(r.pnl_lot)}** |"
         )
+    return out + q7_news(day, t)
+
+
+def q7_news(day: date, t: pd.DataFrame) -> list[str]:
+    """Q7: news and events. The morning card, MAIN vs NEWS, and MAIN's trades split by the logged news flags."""
+    out = ["\n## Q7. News and events (U2)\n"]
+    cf = DATA_U2 / f"{day}_morning.json"
+    card = json.loads(cf.read_text(encoding="utf-8")) if cf.exists() else {}
+    if not card:
+        return [*out, "_No morning card for this day._"]
+    wins = "; ".join(f"{w['from']}–{w['to']} {w['name']}" for w in card.get("event_windows", [])) or "none"
+    out += [
+        f"- **Bias:** {card.get('bias', 'unknown')} (confidence {card.get('confidence')}); "
+        f"**event risk:** {card.get('event_risk', 'none')}; **event windows:** {wins}",
+        "- **Headlines:** " + (" · ".join(card.get("headlines", [])[:5]) or "—"),
+        f"- **News read error:** {card.get('llm_error') or 'none'}",
+    ]
+    tot = {v: (len(g), g.pnl_lot.sum()) for v, g in t.groupby("variant") if v in ("MAIN", "NEWS")}
+    if tot:
+        out.append("- **MAIN vs NEWS:** " + "; ".join(f"{v} {n} trades {fmt(s_)}" for v, (n, s_) in tot.items()))
+    main = t[t.variant == "MAIN"]
+    out += ["\n| MAIN trades split by | Group | Trades | Total ₹ | Wins |", "|---|---|---|---|---|"]
+    for col, label in (("news_bias_with", "news bias"), ("news_gap_with", "gap direction"),
+                       ("news_event_window", "event window"), ("news_vix_guard", "VIX guard")):
+        if col not in main.columns:
+            continue
+        g = main[col].fillna("").astype(str).replace({"": "outside" if col == "news_event_window" else "n/a"})
+        if col == "news_event_window":
+            g = g.where(g == "outside", "inside")
+        for k, grp in main.groupby(g):
+            out.append(f"| {label} | {k} | {len(grp)} | {fmt(grp.pnl_lot.sum())} | {int((grp.pnl_lot > 0).sum())} |")
     return out
 
 

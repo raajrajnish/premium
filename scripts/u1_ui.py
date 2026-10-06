@@ -149,7 +149,8 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
  <div class="card" style="margin-top:14px"><h2>U2 trades today (MAIN)</h2><table id="u2tr"></table></div>
 </div>
 <div>
- <div class="card"><h2>Engine status</h2><div id="u2status">—</div></div>
+ <div class="card"><h2>Morning context (news & events)</h2><div id="u2morning">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Engine status</h2><div id="u2status">—</div></div>
  <div class="card" style="margin-top:14px"><h2>Health by side</h2><div class="chk" id="u2side"></div><div class="tag" id="u2pend" style="margin-top:6px"></div></div>
  <div class="card" style="margin-top:14px"><h2>Variants today</h2><table id="u2var"></table></div>
  <div class="card" style="margin-top:14px"><h2>U1 vs U2 by day (₹/lot)</h2><table id="u2vs"></table><div class="tag" id="u2all" style="margin-top:6px"></div></div>
@@ -201,6 +202,7 @@ async function tick2(){
   u2l=u2c.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:'#22c55e',bottomLineColor:'#ef4444',topFillColor1:'rgba(34,197,94,.25)',bottomFillColor2:'rgba(239,68,68,.25)'});
   new ResizeObserver(()=>u2c.applyOptions({width:document.getElementById('u2chart').clientWidth})).observe(document.getElementById('u2chart'));}
  u2l.setData((s.health_series||[]).map(x=>({time:x.t,value:x.v})));
+ const mo=s.morning||{};document.getElementById('u2morning').innerHTML=`Bias: <b class="${mo.bias==='positive'?'pos':mo.bias==='negative'?'neg':''}">${mo.bias||'unknown'}</b>${mo.confidence!=null?' ('+Math.round(mo.confidence*100)+'%)':''} · event risk <b>${mo.event_risk||'none'}</b><br>Gap: ${mo.gap_pct!=null?(mo.gap_pct>0?'+':'')+mo.gap_pct+'%':'—'} (prev close ${mo.prev_close??'—'}, open ${mo.open??'—'})`+((mo.windows||[]).length?'<br>No-entry windows (NEWS): '+mo.windows.map(w=>`${w.from}–${w.to} ${w.name}`).join('; '):'')+(mo.in_window_now?`<br><span class="neg">Now inside: ${mo.in_window_now}</span>`:'')+((mo.headlines||[]).length?'<ul style="margin:6px 0 0 16px;padding:0">'+mo.headlines.map(h=>`<li>${h}</li>`).join('')+'</ul>':'')+(mo.llm_error?`<div class="tag">news read: ${mo.llm_error}</div>`:'');
  const st=s.status||{};document.getElementById('u2status').innerHTML=st.mode==='in trade'?`<b>${st.side}</b> ${st.key.replace('NSE_','')}<br>entry ${st.entry} @ ₹${st.entry_px} · bid ₹${st.bid??'—'}<br>floor ${st.floor??'—'}${st.tightened?' (tightened)':''} · best ${fmt(st.best_lot)}<br><b class="${cls(st.pnl_lot)}" style="font-size:20px">${fmt(st.pnl_lot)}</b> /lot`:st.mode==='waiting'?`<b>WAITING</b> for ${st.side} (signal ${st.signal}, ${st.class}) · ${st.waiting_s}s`:'Idle: watching for a Gate-1 signal';
  document.getElementById('u2side').innerHTML=['CALL','PUT'].map(k=>{const x=(s.side||{})[k]||{};return `<div><b>${k}</b> · <span class="${x.state==='POSITIVE'?'pos':x.state==='NEGATIVE'?'neg':''}">${x.state||'—'}</span> ${x.health??''} (${x.held_s??0}s)<br>`+(x.plus||[]).map(t=>`<div class="pos">${t}</div>`).join('')+(x.minus||[]).map(t=>`<div class="neg">${t}</div>`).join('')+'</div>';}).join('');
  document.getElementById('u2pend').textContent=s.pendulum?`Pendulum: swing ≈ ${s.pendulum.swing_pts} pts every ≈ ${s.pendulum.swing_secs}s (last 30 min)`:'';

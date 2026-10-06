@@ -6,16 +6,19 @@ Usage: uv run python scripts/u2_watch.py [--day YYYY-MM-DD] [--once]
 
 import argparse
 import json
+import subprocess
+import sys
 import time as _time
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import u2_core as core
 import u2_health as hl
 
-VERSION = "v0.1"
+VERSION = "v0.2"
 LOT, CHARGES = 65, 1.5
 SIG_START, SIG_END, ENTRY_END, HARD = time(9, 45), time(14, 30), time(14, 35), time(15, 10)
 
@@ -31,11 +34,53 @@ class Config:
     max_loss: float = 0.20        # option −20% → exit
     noprog_swings: float = 6.0    # no progress for this many swing periods (only when not in profit)
     max_unprofitable: int = 1200  # s without being in profit → exit
+    news: bool = False            # v0.2: apply the news/event rules (README §10); MAIN only logs them
 
 
 VARIANTS = [Config("MAIN"), Config("E15", enter_hold=15), Config("E45", enter_hold=45), Config("E60", enter_hold=60),
             Config("X10", exit_hold=10), Config("X30", exit_hold=30), Config("X45", exit_hold=45),
-            Config("B20", breath=0.20), Config("B33", breath=0.33)]
+            Config("B20", breath=0.20), Config("B33", breath=0.33), Config("NEWS", news=True)]
+GAP_LARGE, BIAS_CONF, AGAINST_HOLD, VIX_Z, VIX_PAUSE = 0.5, 0.5, 45, 3.0, timedelta(minutes=5)
+
+
+@dataclass
+class News:
+    """Morning context card + live opening gap (README §10). Built once per replay; deterministic."""
+    card: dict[str, Any]
+    open_px: float | None
+    gap_pct: float | None
+    windows: list[tuple[datetime, datetime, datetime, str]]
+    bias_dir: int
+
+    def in_window(self, ts: datetime) -> str | None:
+        return next((n for a, b, _, n in self.windows if a <= ts <= b), None)
+
+    def event_soon(self, ts: datetime) -> bool:
+        return any(timedelta(0) <= t - ts <= timedelta(minutes=2) for _, _, t, _ in self.windows)
+
+    def flags(self, ts: datetime, d: int, vix_guard: bool) -> dict[str, Any]:
+        g = self.gap_pct
+        return {"event_window": self.in_window(ts) or "", "vix_guard": vix_guard,
+                "gap_pct": None if g is None else round(g, 2),
+                "gap_with": "none" if g is None or abs(g) < GAP_LARGE else ("with" if g * d > 0 else "against"),
+                "bias": self.card.get("bias", "unknown"),
+                "bias_with": "n/a" if self.bias_dir == 0 else ("with" if self.bias_dir == d else "against")}
+
+
+def load_news(feed: core.Feed) -> News:
+    f = core.OUT / f"{feed.day}_morning.json"
+    card = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    open_px = next((float(i["NSE_NIFTY"]) for ts, i, _ in feed.ltp if ts.time() >= time(9, 15)), None)
+    pc = card.get("prev_close")
+    gap = (open_px / pc - 1) * 100 if open_px and pc else None
+    wins = []
+    for w in card.get("event_windows", []):
+        t = datetime.combine(feed.day, datetime.strptime(w["time"], "%H:%M").time())
+        wins.append((t - timedelta(minutes=10), t + timedelta(minutes=15), t, w["name"]))
+    conf = card.get("confidence") or 0
+    bias = card.get("bias", "unknown")
+    bdir = (1 if bias == "positive" else -1 if bias == "negative" else 0) if conf >= BIAS_CONF else 0
+    return News(card=card, open_px=open_px, gap_pct=gap, windows=wins, bias_dir=bdir)
 
 
 @dataclass
@@ -57,6 +102,7 @@ class Pos:
     below_since: datetime | None = None
     last_pos_health: datetime | None = None
     last_bid: float | None = None
+    flags: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,7 +114,9 @@ class Engine:
     wait: dict[str, Any] | None = None
 
 
-def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
+def run_day(feed: core.Feed, h: hl.Health, news: News | None = None) -> list[Engine]:
+    news = news or load_news(feed)
+    vix_until: datetime | None = None
     tk = h.ticks
     ms = h.minutes.set_index("done") if len(h.minutes) else h.minutes
     pend = h.pendulum
@@ -85,6 +133,9 @@ def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
         if isinstance(row, pd.DataFrame):
             row = row.iloc[-1]
         hup = float(row["health"])
+        if float(row.get("z_vix", 0.0)) <= -VIX_Z:            # VIX jumped sharply within 60 s
+            vix_until = ts + VIX_PAUSE
+        vix_guard = vix_until is not None and ts < vix_until
         # held time of each side's state
         for d in (1, -1):
             st = hl.state_of(d * hup)
@@ -104,6 +155,8 @@ def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
         for e in engines:
             c = e.cfg
             if e.pos is not None:
+                if c.news and (news.event_soon(ts) or vix_guard):  # tighten before an event / on a VIX jump
+                    e.pos.tightened = True
                 _manage(e, feed, ts, fno, spot, hup, held, minute, gap, sig_sd, swing_pts, swing_secs)
                 continue
             # new Gate-1 signal at a completed minute
@@ -115,19 +168,27 @@ def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
                         e.decisions.append(e.wait | {"decision": "SKIP", "why": "opposite signal", "at": ts})
                         e.wait = None
                     if e.wait is None:
-                        e.wait = {"d": d, "side": sig["side"], "signal": sig["minute"], "cls": sig["class"],
-                                  "conf": sig["confirmations"], "start": ts, "h_signal": round(d * hup, 2)}
+                        w0 = {"d": d, "side": sig["side"], "signal": sig["minute"], "cls": sig["class"],
+                              "conf": sig["confirmations"], "start": ts, "h_signal": round(d * hup, 2),
+                              **news.flags(ts, d, vix_guard)}
+                        if c.news and w0["gap_pct"] is not None and abs(w0["gap_pct"]) >= GAP_LARGE \
+                                and ts.time() < time(10, 0):
+                            e.decisions.append(w0 | {"decision": "SKIP", "why": "large gap: before 10:00", "at": ts})
+                        else:
+                            e.wait = w0
             if e.wait is None:
                 continue
             w, d = e.wait, e.wait["d"]
             hs = held[d]
             why = None
+            blocked = c.news and (news.in_window(ts) is not None or vix_guard)   # wait, but don't enter
+            hold = AGAINST_HOLD if (c.news and news.bias_dir not in (0, d)) else c.enter_hold
             if minute is not None:
                 comp = minute["up"] if d > 0 else minute["dn"]
                 if not (comp["vwap"] and comp["ema_order"] and comp["ema_slope"]):
                     why = "trend broke"
-                elif comp["confirmations"] >= 4 and comp["volume"] and ts.time() <= ENTRY_END:
-                    _enter(e, feed, ts, fno, spot, hup, "re-confirmation")
+                elif comp["confirmations"] >= 4 and comp["volume"] and ts.time() <= ENTRY_END and not blocked:
+                    _enter(e, feed, ts, fno, spot, hup, "re-confirmation", news.flags(ts, d, vix_guard))
                     continue
             if why is None and hs["state"] == "NEGATIVE" and (ts - hs["since"]).total_seconds() >= c.skip_hold:
                 why = "health negative"
@@ -139,8 +200,8 @@ def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
                 e.decisions.append(w | {"decision": "SKIP", "why": why, "at": ts})
                 e.wait = None
                 continue
-            if hs["state"] == "POSITIVE" and (ts - hs["since"]).total_seconds() >= c.enter_hold:
-                _enter(e, feed, ts, fno, spot, hup, f"health positive {c.enter_hold}s")
+            if not blocked and hs["state"] == "POSITIVE" and (ts - hs["since"]).total_seconds() >= hold:
+                _enter(e, feed, ts, fno, spot, hup, f"health positive {hold}s", news.flags(ts, d, vix_guard))
     for e in engines:                                        # day ended with a wait still open
         if e.wait is not None:
             e.decisions.append(e.wait | {"decision": "WAITING", "why": "", "at": None})
@@ -149,7 +210,7 @@ def run_day(feed: core.Feed, h: hl.Health) -> list[Engine]:
 
 
 def _enter(e: Engine, feed: core.Feed, ts: datetime, fno: dict[str, float], spot: float, hup: float,
-           how: str) -> None:
+           how: str, flags: dict[str, Any] | None = None) -> None:
     w, d = e.wait, e.wait["d"]
     side = "CE" if d > 0 else "PE"
     strike = int(round(spot / 50) * 50)
@@ -163,7 +224,8 @@ def _enter(e: Engine, feed: core.Feed, ts: datetime, fno: dict[str, float], spot
     px = q[1] if q else float(fno[key]) + 0.5
     exp = core.expiry_of(key)
     e.pos = Pos(d=d, key=key, px0=px, t0=ts, spot0=spot, sig_min=w["signal"], cls=w["cls"], h0=round(d * hup, 2),
-                hard=time(14, 45) if exp == feed.day else HARD, peak_bid=px, worst_bid=px, cusum=hl.Cusum(d))
+                hard=time(14, 45) if exp == feed.day else HARD, peak_bid=px, worst_bid=px, cusum=hl.Cusum(d),
+                flags=flags or {})
     e.decisions.append(w | {"decision": "ENTER", "why": how, "at": ts,
                             "waited_s": int((ts - w["start"]).total_seconds())})
     e.wait = None
@@ -242,7 +304,8 @@ def _manage(e: Engine, feed: core.Feed, ts: datetime, fno: dict[str, float], spo
                          "entry_px": round(p.px0, 2), "health_entry": p.h0, "exit": ts.strftime("%H:%M:%S"),
                          "exit_px": round(px, 2), "reason": reason, "health_exit": round(hd, 2),
                          "mins": round(el / 60, 1), "best_lot": round((p.peak_bid - p.px0 - CHARGES) * LOT),
-                         "worst_lot": round((p.worst_bid - p.px0 - CHARGES) * LOT), "pnl_lot": pnl})
+                         "worst_lot": round((p.worst_bid - p.px0 - CHARGES) * LOT), "pnl_lot": pnl,
+                         **{f"news_{k}": v for k, v in p.flags.items()}})
         e.pos = None
 
 
@@ -280,9 +343,19 @@ def write_state(feed: core.Feed, h: hl.Health, engines: list[Engine]) -> None:
                   "pnl_lot": round((bid - p.px0 - CHARGES) * LOT) if bid is not None else None,
                   "best_lot": round((p.peak_bid - p.px0 - CHARGES) * LOT)}
     pend = h.pendulum.iloc[-1] if len(h.pendulum) else None
+    nw = load_news(feed)
+    card = nw.card
+    morning = {"built_at": card.get("built_at"), "bias": card.get("bias", "unknown"),
+               "confidence": card.get("confidence"),
+               "event_risk": card.get("event_risk", "none"), "windows": card.get("event_windows", []),
+               "headlines": card.get("headlines", [])[:5], "global": card.get("global_cues", {}),
+               "summary": card.get("summary", ""), "llm_error": card.get("llm_error"),
+               "prev_close": card.get("prev_close"), "open": nw.open_px,
+               "gap_pct": None if nw.gap_pct is None else round(nw.gap_pct, 2),
+               "in_window_now": nw.in_window(ts) or "", "vix_z_now": round(float(last.get("z_vix", 0.0)), 2)}
     spark = tk.health.resample("1min").last().dropna().tail(120)
     state = {"updated": datetime.now().isoformat(timespec="seconds"), "feed_ts": ts.isoformat(timespec="seconds"),
-             "day": str(feed.day), "version": VERSION, "side": side, "status": status,
+             "day": str(feed.day), "version": VERSION, "side": side, "status": status, "morning": morning,
              "pendulum": {"swing_pts": round(float(pend.swing_pts), 1), "swing_secs": round(float(pend.swing_secs))}
              if pend is not None else None,
              "health_series": [{"t": int(pd.Timestamp(t).timestamp()), "v": round(float(v), 3)}
@@ -321,7 +394,13 @@ def main() -> None:
     shown = 0
     print(f"U2 {VERSION} paper watcher for {day} (PAPER ONLY; reads the recorder read-only). Rules: docs/U2_README.md")
     engines: list[Engine] = []
+    card_started = False
     while True:
+        card_file = core.OUT / f"{day}_morning.json"
+        if not card_started and not card_file.exists() and not a.once and day == date.today():
+            # one background build; the card is frozen once written (README §10)
+            subprocess.Popen([sys.executable, str(Path(__file__).with_name("u2_morning.py")), "--day", str(day)])  # noqa: S603
+            card_started = True
         feed.update()
         if len(feed.ltp) > 50:
             h = hl.build(feed)

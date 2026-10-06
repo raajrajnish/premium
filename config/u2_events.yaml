@@ -1,0 +1,7 @@
+# U2's own scheduled events (owner-maintained). Read by scripts/u2_morning.py together with the Nifty system's
+# config/event_calendar.yaml (read-only). Put the IST time in the text as "HH:MM IST" so U2 can set an event window
+# (no new entries from 10 min before to 15 min after; NEWS variant only, see docs/U2_README.md §10).
+# Example:
+#   - {date: 2026-10-07, event: "RBI MPC policy decision (10:00 IST)", verified: true}
+#   - {date: 2026-10-14, event: "HDFC Bank Q2 results (after close; reaction next session)", verified: false}
+events: []

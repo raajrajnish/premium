@@ -4,7 +4,8 @@ This file is the **single source of truth** for U2. Code follows this file. Any 
 
 | Version | Valid from | Summary |
 |---|---|---|
-| **v0.1** | **2026-10-07** (first session) | Gate 1 = U1 v3 checklist (U2's own copy). Gate 2 + in-trade = live health engine with equal weights (no learned weights yet). Starting values as agreed on 2026-10-06. |
+| **v0.2** | **2026-10-07** (first session) | v0.1 plus the **news and events layer** (§10): a morning context card; MAIN only **logs** the news flags; a new shadow variant **NEWS** applies the rules. MAIN's decisions are identical to v0.1. |
+| v0.1 | (built 2026-10-06; superseded by v0.2 before its first session) | Gate 1 = U1 v3 checklist (U2's own copy). Gate 2 + in-trade = live health engine with equal weights (no learned weights yet). Starting values as agreed on 2026-10-06. |
 
 ## 1. Principles (agreed with the owner, 2026-10-06)
 1. **Live data only.** Decisions use the current day's live feed. Learned weights (later versions) come only from **previous live days** (the live factor scorecard), frozen during the day.
@@ -102,3 +103,29 @@ P&L = (bid − entry fill − ₹1.5 charges) × 65. "In profit" = P&L > 0.
 1. **Start Trading** (Nifty system) starts the recorder.
 2. Start the U1 watcher, the **U2 watcher** (window "premium U2 watch (paper)": `uv run python scripts/u2_watch.py`, stops by itself at 15:12) and the dashboard (http://127.0.0.1:8760; U2 has its own section below U1's).
 3. After the close, run `/u1-daily-review`; it covers U1 and U2.
+
+## 10. News and events (v0.2, owner 2026-10-06)
+
+**Morning context card** (`scripts/u2_morning.py` → `data/u2/<day>_morning.json`). Built once in the background when the U2 watcher starts, then frozen for the day:
+- **Events:** today's entries in the Nifty system's `config/event_calendar.yaml` (read-only) and premium's own `config/u2_events.yaml` (owner-maintained; put the time as "HH:MM IST"). Yesterday's US events marked "next session" are listed as overnight events.
+- **Gap:** yesterday's close (from the recorder) vs today's first price at or after 09:15.
+- **News read:** ONE headless Claude Code call (WebSearch only, owner's subscription, no API key) giving:
+  - the news bias (positive / negative / mixed / unknown) and its confidence;
+  - up to 5 headlines;
+  - global cues (US close, Asia, crude, USD/INR, GIFT Nifty);
+  - today's market-hours events with times;
+  - the event risk (none / medium / high).
+  If the call fails, the bias is "unknown" and the card records the error.
+- **Event windows:** every event with a time during 09:15–15:30 → a no-entry window from **10 min before to 15 min after**.
+
+**Rules.** MAIN logs them only. The **NEWS** variant applies them:
+
+| Rule | NEWS variant |
+|---|---|
+| Event window | no new entries inside a window (an open wait continues, but can't enter until the window ends) |
+| Before an event / VIX jump | an open trade is **tightened** within 2 min before an event time, or while the VIX guard is on (breathing 15%; the floor is at least entry + charges once in profit) |
+| Large gap | if \|gap\| ≥ **0.5%**, signals before **10:00** are skipped ("large gap: before 10:00") |
+| News bias | if the bias is positive or negative with confidence ≥ 0.5, trades **against** it need **45 s** of positive health instead of 30 s |
+| VIX guard | if VIX's 60-s change is ≥ 3 standard units of its last 30 min (a sharp jump), no new entries for 5 min |
+
+**Logged on every decision and trade, all variants** (`news_*` columns): whether it was inside an event window, the VIX guard, the gap %, whether the trade was with or against the gap, the bias, and whether the trade was with or against the bias. The daily review's **Q7** compares MAIN and NEWS and splits results by these flags. A rule moves into MAIN only with live evidence and the owner's approval.
