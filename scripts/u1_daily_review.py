@@ -4,6 +4,8 @@ Outputs
   docs/u1_daily/<day>.md         facts per trade (narrative sections are written afterwards, per the skill)
   data/u1/reviews/<day>.json     tags + hypothesis outcomes per trade
   docs/U1_HYPOTHESES.md          running scoreboard of every hypothesis across all reviewed days
+  docs/U2_FACTOR_SCORECARD.md    Q6: live factor scorecard across all reviewed days (which indicator changes lead Nifty)
+Covers U1 and, when its files exist, U2 (docs/U2_README.md). Live data only.
 
 Read-only on the recorder files and U1 outputs.
 Usage: uv run python scripts/u1_daily_review.py [--day YYYY-MM-DD]
@@ -18,10 +20,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import u1_watch as u
+import u2_core as u2c
+import u2_health as u2h
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS, REVIEWS = ROOT / "docs" / "u1_daily", ROOT / "data" / "u1" / "reviews"
 MODELS = ("EC0", "EC1", "EC2", "EC2P")
+TIME_EXITS = {"time", "F no progress", "G max hold"}
+DATA_U2 = ROOT / "data" / "u2"
 LABEL = {"EC0": "EC0", "EC1": "EC1", "EC2": "EC2", "EC2P": "EC2+"}
 HYP = {
     "H1": "Entry right after a burst candle → the option dips below the entry price within 5 min",
@@ -134,6 +140,11 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
                 "best": max(p[2] for p in w) if w else None,
                 "worst": min(p[2] for p in w) if w else None,
             }
+            after = [p[2] for p in path if exits[m] < p[0] <= exits[m] + timedelta(minutes=10)]
+            pm = per_model[m]
+            pm["after_best"] = max(after) if after else None  # Q4: best P&L in the 10 min after the exit
+            pm["kept_pct"] = round(100 * pm["pnl"] / pm["best"]) if pm["best"] and pm["best"] > 0 else None
+            pm["time_exit_in_profit"] = bool(pm["reason"] in TIME_EXITS and pm["pnl"] > 0)  # Q3
         # GOOD label: +15 before −12 within 15 min
         good = None
         for ts, g, _, _ in path:
@@ -280,12 +291,16 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
             f"low ₹{fmt(rec['low_pnl'])} at {rec['low_at']}; Nifty best {pts.max():+.1f} / worst {pts.min():+.1f} pts; "
             f"GOOD (+15 before −12 in 15 min): **{'yes' if good else 'no'}**; burst entry: {'yes' if burst else 'no'}"
         )
-        md.append("\n| Model | Exit | Reason | ₹ | Best while open | Worst while open |\n|---|---|---|---|---|---|")
+        md.append(
+            "\n| Model | Exit | Reason | ₹ | Best while open | Worst while open | Kept % of its best "
+            "| Best ₹ in 10 min after exit | Time exit while in profit? |\n|---|---|---|---|---|---|---|---|---|"
+        )
         for m in models:
             pm = per_model[m]
             md.append(
                 f"| {LABEL[m]} | {pm['exit']} | {pm['reason']} | **{fmt(pm['pnl'])}** | {fmt(pm['best'])} | "
-                f"{fmt(pm['worst'])} |"
+                f"{fmt(pm['worst'])} | {pm['kept_pct'] if pm['kept_pct'] is not None else '—'}% | "
+                f"{fmt(pm['after_best'])} | {'⚠ yes' if pm['time_exit_in_profit'] else 'no'} |"
             )
         md.append("\n*Starred columns are direction-adjusted (+ = in the trade's favour).*\n")
         md.append(md_table(rows))
@@ -294,11 +309,11 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
             "\n**Hypotheses:** "
             + (", ".join(f"{k} = {v if not isinstance(v, dict) else v}" for k, v in h.items()) or "none applicable")
         )
-        md.append("\n### Narrative (written per the /u1-daily-review skill)\n\n_TODO_\n")
+        md.append("\n### Narrative (Q1–Q5 per the /u1-daily-review skill)\n\n_TODO_\n")
         pend.append(n + 1)
     # header + summary
     head = [
-        f"# U1 daily review: {day} ({ver})\n",
+        f"# Daily review: {day} (U1 {ver}; U2 if it ran)\n",
         f"Generated {datetime.now():%Y-%m-%d %H:%M} by `scripts/u1_daily_review.py`. Facts are computed; "
         "narratives follow the skill's fixed questions.\n",
         f"- **Signals:** {len(signals)} (taken {int(signals.taken.sum())}); skipped because: "
@@ -324,9 +339,198 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
             + " | ".join(f"{fmt(t['models'][m]['pnl'])} ({t['models'][m]['reason']})" for m in models)
             + " |"
         )
+    head += missed_signals(signals, b)
+    head += u2_section(day, trades, models)
+    fac = factor_day(day)
+    head += factor_md(fac)
     head.append("\n## Day summary (written per the skill)\n\n_TODO_\n")
     body = "\n".join(head + md)
-    return body, {"day": str(day), "version": ver, "trades": out_trades, "pending_narratives": pend}
+    return body, {"day": str(day), "version": ver, "trades": out_trades, "pending_narratives": pend, "factors": fac}
+
+
+def missed_signals(signals: pd.DataFrame, b: pd.DataFrame) -> list[str]:
+    """Q5: every signal NOT taken, why, and what Nifty did in the next 15 min (in the signal's direction)."""
+    out = [
+        "\n## Q5. Signals not taken (U1)\n",
+        "| Signal | Side | Class | Conf | Why not | Best / worst next 15 min (pts) | +15 before −12? |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    rows = signals[~signals.taken]
+    if rows.empty:
+        return out + ["| — | | | | | | |"]
+    for _, s_ in rows.iterrows():
+        d = 1 if s_.side == "CALL" else -1
+        m = pd.Timestamp(datetime.combine(b.index[0].date(), datetime.strptime(s_.minute, "%H:%M").time()))
+        if m not in b.index:
+            continue
+        i = b.index.get_loc(m)
+        nxt = b.iloc[i + 1 : i + 16]
+        c0 = float(b.close.iloc[i])
+        fav = (nxt.high - c0) if d > 0 else (c0 - nxt.low)
+        adv = (nxt.low - c0) if d > 0 else (c0 - nxt.high)
+        good = "—"
+        for f_, a_ in zip(fav, adv, strict=False):
+            if a_ <= -12:
+                good = "no"
+                break
+            if f_ >= 15:
+                good = "yes"
+                break
+        out.append(
+            f"| {s_.minute} | {s_.side} | {s_['class']} | {s_.confirmations} | {s_.why_not} | "
+            f"{fav.max():+.0f} / {adv.min():+.0f} | {good} |"
+        )
+    return out
+
+
+def u2_section(day: date, u1_trades: pd.DataFrame, models: list[str]) -> list[str]:
+    """U2 (health engine): MAIN trades, entry decisions, variants, and U1 vs U2 for the day."""
+    tf, dfile = DATA_U2 / f"{day}_trades.csv", DATA_U2 / f"{day}_decisions.csv"
+    if not tf.exists():
+        return ["\n## U2 (health engine)\n", "_U2 did not run on this day._"]
+    t = pd.read_csv(tf)
+    dec = pd.read_csv(dfile) if dfile.exists() else pd.DataFrame()
+    main = t[t.variant == "MAIN"]
+    out = ["\n## U2 (health engine)\n", "| Model | Trades | Total ₹ | Wins |", "|---|---|---|---|"]
+    for m in models:
+        p = u1_trades[f"{m}_pnl"].astype(float)
+        out.append(f"| U1 {LABEL[m]} | {len(p)} | {fmt(p.sum())} | {int((p > 0).sum())} |")
+    for v, g in t.groupby("variant", sort=False):
+        out.append(
+            f"| U2 {v} | {len(g)} | {'**' if v == 'MAIN' else ''}{fmt(g.pnl_lot.sum())}"
+            f"{'**' if v == 'MAIN' else ''} | {int((g.pnl_lot > 0).sum())} |"
+        )
+    if not dec.empty:
+        dm = dec[dec.variant == "MAIN"]
+        out.append(
+            f"\n**U2 MAIN entry decisions:** {len(dm)} signals → "
+            + ", ".join(f"{k} {v}" for k, v in dm.decision.value_counts().items())
+            + "; skip reasons: "
+            + (", ".join(f"{k} {v}" for k, v in dm[dm.decision == "SKIP"].why.value_counts().items()) or "—")
+        )
+    out += [
+        "\n| # | Side | Signal | Entry | Health at entry | Exit (why) | Health at exit | Best ₹ | ₹ |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for k, (_, r) in enumerate(main.iterrows(), 1):
+        out.append(
+            f"| {k} | {r.side} | {r.signal_min} | {r.entry} @ {r.entry_px} | {r.health_entry:+.2f} | "
+            f"{r.exit} ({r.reason}) | {r.health_exit:+.2f} | {fmt(r.best_lot)} | **{fmt(r.pnl_lot)}** |"
+        )
+    return out
+
+
+FACTORS = [*u2h.CONT, "trend", "trigger", "health"]
+
+
+def factor_day(day: date) -> dict[str, Any]:
+    """Q6 for one day: per factor, at each minute end, its value vs Nifty's move over the next 3 minutes.
+    Spearman correlation, plus events (z ≥ +1 → expect up; z ≤ −1 → expect down): average move in the expected
+    direction and hit rate. Uses U2's health factors (live feed only)."""
+    feed = u2c.Feed(day)
+    feed.update()
+    if len(feed.ltp) < 200:
+        return {}
+    h = u2h.build(feed)
+    tk = h.ticks
+    per_min = tk.resample("1min").last().dropna(subset=["nifty"])
+    per_min = per_min.between_time("09:30", "15:05")
+    nxt = per_min.nifty.shift(-3) - per_min.nifty
+    out: dict[str, Any] = {}
+    for f in FACTORS:
+        col = "health" if f == "health" else f"z_{f}"
+        x = per_min[col]
+        ok = x.notna() & nxt.notna()
+        if ok.sum() < 20:
+            continue
+        rho = float(x[ok].rank().corr(nxt[ok].rank()))
+        th = 0.3 if f in ("health", "trend") else (1.0 if f != "trigger" else 0.5)
+        up, dn = ok & (x >= th), ok & (x <= -th)
+        moves = list(nxt[up]) + list(-nxt[dn])  # move in the expected direction
+        out[f] = {
+            "n_min": int(ok.sum()),
+            "rho": round(rho, 3),
+            "events": len(moves),
+            "sum_move": float(np.sum(moves)) if moves else 0.0,
+            "hits": int(sum(1 for m_ in moves if m_ > 0)),
+            "pos_day": bool(np.mean(moves) > 0) if moves else None,
+        }
+    return out
+
+
+def factor_md(fac: dict[str, Any]) -> list[str]:
+    out = [
+        "\n## Q6. Live factor scorecard: today\n",
+        "*At each minute: the factor's value vs Nifty's move over the next 3 minutes. ρ = Spearman correlation "
+        "(+ = the factor points the right way). Events = minutes when the factor was strong (|z| ≥ 1; health/trend "
+        "≥ 0.3); move = average Nifty move in the expected direction over the next 3 min.*\n",
+        "| Factor | Minutes | ρ | Events | Avg move (pts) | Hit % |",
+        "|---|---|---|---|---|---|",
+    ]
+    for f, v in fac.items():
+        avg = v["sum_move"] / v["events"] if v["events"] else None
+        hit = f"{100 * v['hits'] / v['events']:.0f}%" if v["events"] else "—"
+        out.append(
+            f"| {u2h.NAMES.get(f, f)} | {v['n_min']} | {v['rho']:+.2f} | {v['events']} | "
+            f"{'—' if avg is None else f'{avg:+.1f}'} | {hit} |"
+        )
+    return out
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    if n == 0:
+        return (0.0, 0.0)
+    p_ = k / n
+    den = 1 + z * z / n
+    c = (p_ + z * z / (2 * n)) / den
+    w = z * ((p_ * (1 - p_) / n + z * z / (4 * n * n)) ** 0.5) / den
+    return (c - w, c + w)
+
+
+def factor_scorecard() -> str:
+    """Q6 across all reviewed live days."""
+    agg: dict[str, dict[str, Any]] = {}
+    days = []
+    for f in sorted(REVIEWS.glob("*.json")):
+        j = json.loads(f.read_text(encoding="utf-8"))
+        if not j.get("factors"):
+            continue
+        days.append(j["day"])
+        for k, v in j["factors"].items():
+            a = agg.setdefault(k, {"events": 0, "hits": 0, "sum": 0.0, "rho": [], "days_pos": 0, "days": 0})
+            a["events"] += v["events"]
+            a["hits"] += v["hits"]
+            a["sum"] += v["sum_move"]
+            a["rho"].append(v["rho"])
+            if v["pos_day"] is not None:
+                a["days"] += 1
+                a["days_pos"] += int(v["pos_day"])
+    lines = [
+        "# U2 live factor scorecard (Q6; auto-generated by `scripts/u1_daily_review.py`)\n",
+        f"Live days: {len(days)} ({', '.join(days)})\n",
+        "A factor is **reliable** when it has ≥ 30 events over ≥ 5 live days, its hit-rate range stays above 50%, "
+        "and it worked on most days separately. Reliable factors become candidate weights for the next U2 "
+        "version (owner approval required).\n",
+        "| Factor | Events | Avg move next 3 min (pts) | Hit % | 95% range | Days it worked | Avg ρ | Status |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for k in FACTORS:
+        if k not in agg:
+            continue
+        a = agg[k]
+        n = a["events"]
+        lo, hi = wilson(a["hits"], n)
+        status = (
+            "collecting"
+            if (n < 30 or a["days"] < 5)
+            else ("reliable ✅" if lo > 0.5 and a["days_pos"] > a["days"] / 2 else "not reliable")
+        )
+        lines.append(
+            f"| {u2h.NAMES.get(k, k)} | {n} | {a['sum'] / n if n else 0:+.2f} | "
+            f"{100 * a['hits'] / n if n else 0:.0f}% | {100 * lo:.0f}–{100 * hi:.0f}% | "
+            f"{a['days_pos']}/{a['days']} | {np.mean(a['rho']):+.2f} | {status} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def scoreboard() -> str:
@@ -371,6 +575,7 @@ def main() -> None:
     out.write_text(md, encoding="utf-8")
     (REVIEWS / f"{day}.json").write_text(json.dumps(js, indent=1, default=str), encoding="utf-8")
     (ROOT / "docs" / "U1_HYPOTHESES.md").write_text(scoreboard(), encoding="utf-8")
+    (ROOT / "docs" / "U2_FACTOR_SCORECARD.md").write_text(factor_scorecard(), encoding="utf-8")
     print(f"review: {out}\njson: {REVIEWS / f'{day}.json'}\nscoreboard: {ROOT / 'docs' / 'U1_HYPOTHESES.md'}")
     print(f"trades reviewed: {len(js['trades'])}; narratives to write: {js['pending_narratives']}")
 

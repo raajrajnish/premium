@@ -11,6 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "u1"
+DATA_U2 = ROOT / "data" / "u2"          # U2 panel (additive; docs/U2_README.md)
 PORT = 8760
 
 
@@ -69,6 +70,34 @@ def grouped(trades: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def u2_stats() -> dict[str, Any]:
+    """U2 MAIN all-time stats, per-variant all-time totals, and U1-vs-U2 per day (same days)."""
+    rows: list[dict[str, Any]] = []
+    for f in sorted(DATA_U2.glob("*_trades.csv")):
+        with f.open(encoding="utf-8") as fh:
+            rows += list(csv.DictReader(fh))
+    main = [r for r in rows if r.get("variant") == "MAIN"]
+    variants: dict[str, Any] = {}
+    for r in rows:
+        v = variants.setdefault(r["variant"], {"trades": 0, "total": 0, "wins": 0})
+        x = float(r["pnl_lot"])
+        v["trades"] += 1
+        v["total"] += round(x)
+        v["wins"] += int(x > 0)
+    days = sorted({r["date"] for r in rows})
+    u1 = all_trades()
+    vs = []
+    for d in days:
+        row: dict[str, Any] = {"day": d, "U2": round(sum(float(r["pnl_lot"]) for r in main if r["date"] == d))}
+        for m in MODELS:
+            vals = [t.get(f"{m}_pnl") if m != "EC0" else (t.get("EC0_pnl") or t.get("pnl_lot")) for t in u1
+                    if t.get("date") == d]
+            vals = [float(v) for v in vals if v not in (None, "")]
+            row[m] = round(sum(vals)) if vals else None
+        vs.append(row)
+    return {"main": stats(main), "variants": variants, "vs": vs}
+
+
 def _cum(p: list[float]) -> list[float]:
     out, s = [], 0.0
     for x in p:
@@ -111,6 +140,21 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
   <div class="tag" id="goal" style="margin-top:8px"></div><table id="bycls" style="margin-top:8px"></table></div>
 </div>
 </main>
+<header style="border-top:1px solid var(--line)"><h1>U2 · health engine</h1><span class="paper">PAPER ONLY</span>
+<span class="tag" id="u2meta">loading…</span></header>
+<main>
+<div>
+ <div class="card"><h2>Live health (smoothed, 15 s) · + favours CALL, − favours PUT</h2><div id="u2chart" style="height:180px"></div></div>
+ <div class="card" style="margin-top:14px"><h2>Entry decisions (MAIN)</h2><table id="u2dec"></table></div>
+ <div class="card" style="margin-top:14px"><h2>U2 trades today (MAIN)</h2><table id="u2tr"></table></div>
+</div>
+<div>
+ <div class="card"><h2>Engine status</h2><div id="u2status">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Health by side</h2><div class="chk" id="u2side"></div><div class="tag" id="u2pend" style="margin-top:6px"></div></div>
+ <div class="card" style="margin-top:14px"><h2>Variants today</h2><table id="u2var"></table></div>
+ <div class="card" style="margin-top:14px"><h2>U1 vs U2 by day (₹/lot)</h2><table id="u2vs"></table><div class="tag" id="u2all" style="margin-top:6px"></div></div>
+</div>
+</main>
 <script>
 const fmt=v=>v==null?'—':(v>0?'+':'')+'₹'+Math.round(v).toLocaleString('en-IN');
 const cls=v=>v>0?'pos':v<0?'neg':'';
@@ -147,7 +191,26 @@ async function tick(){
  const g=(a.groups||{})[a.version];document.getElementById('bycls').innerHTML=g?'<tr><th>Class</th><th>Trades</th><th>Avg</th><th>Win %</th><th>Total</th></tr>'+Object.entries(g.by_class).map(([k,v])=>`<tr><td>${k}</td><td>${v.trades}</td><td class="${cls(v.avg)}">${fmt(v.avg)}</td><td>${v.win_rate??'—'}</td><td class="${cls(v.total)}">${fmt(v.total)}</td></tr>`).join(''):'';
  document.getElementById('goal').textContent=`Testing phase: no trade cap and no pass/fail thresholds; collecting trades for analysis (${a.trades} so far in ${a.version}).`;
 }
-tick();setInterval(tick,5000);
+let u2c,u2l;
+async function tick2(){
+ let s,a;try{[s,a]=await Promise.all([fetch('/api/u2/state').then(r=>r.json()),fetch('/api/u2/stats').then(r=>r.json())]);}catch(e){return;}
+ if(!s||!s.day){document.getElementById('u2meta').textContent='U2 watcher not running yet';return;}
+ const age=(Date.now()-new Date(s.updated).getTime())/1000;
+ document.getElementById('u2meta').innerHTML=`${s.day} · ${s.version} · feed ${s.feed_ts?.slice(11)} `+(age>90?'<span class="stale">· watcher not updating ('+Math.round(age)+'s)</span>':'· live');
+ if(!u2c){u2c=LightweightCharts.createChart(document.getElementById('u2chart'),{layout:{background:{color:'#171a21'},textColor:'#c9cdd6'},grid:{vertLines:{color:'#20242d'},horzLines:{color:'#20242d'}},timeScale:{timeVisible:true}});
+  u2l=u2c.addBaselineSeries({baseValue:{type:'price',price:0},topLineColor:'#22c55e',bottomLineColor:'#ef4444',topFillColor1:'rgba(34,197,94,.25)',bottomFillColor2:'rgba(239,68,68,.25)'});
+  new ResizeObserver(()=>u2c.applyOptions({width:document.getElementById('u2chart').clientWidth})).observe(document.getElementById('u2chart'));}
+ u2l.setData((s.health_series||[]).map(x=>({time:x.t,value:x.v})));
+ const st=s.status||{};document.getElementById('u2status').innerHTML=st.mode==='in trade'?`<b>${st.side}</b> ${st.key.replace('NSE_','')}<br>entry ${st.entry} @ ₹${st.entry_px} · bid ₹${st.bid??'—'}<br>floor ${st.floor??'—'}${st.tightened?' (tightened)':''} · best ${fmt(st.best_lot)}<br><b class="${cls(st.pnl_lot)}" style="font-size:20px">${fmt(st.pnl_lot)}</b> /lot`:st.mode==='waiting'?`<b>WAITING</b> for ${st.side} (signal ${st.signal}, ${st.class}) · ${st.waiting_s}s`:'Idle: watching for a Gate-1 signal';
+ document.getElementById('u2side').innerHTML=['CALL','PUT'].map(k=>{const x=(s.side||{})[k]||{};return `<div><b>${k}</b> · <span class="${x.state==='POSITIVE'?'pos':x.state==='NEGATIVE'?'neg':''}">${x.state||'—'}</span> ${x.health??''} (${x.held_s??0}s)<br>`+(x.plus||[]).map(t=>`<div class="pos">${t}</div>`).join('')+(x.minus||[]).map(t=>`<div class="neg">${t}</div>`).join('')+'</div>';}).join('');
+ document.getElementById('u2pend').textContent=s.pendulum?`Pendulum: swing ≈ ${s.pendulum.swing_pts} pts every ≈ ${s.pendulum.swing_secs}s (last 30 min)`:'';
+ const dec=(s.decisions||[]).slice().reverse();document.getElementById('u2dec').innerHTML=dec.length?'<tr><th>Signal</th><th>Side</th><th>Decision</th><th>Why</th><th>At</th></tr>'+dec.map(x=>`<tr><td>${x.signal}</td><td>${x.side} ${x.cls||''}</td><td class="${x.decision==='ENTER'?'pos':x.decision==='SKIP'?'neg':''}">${x.decision}${x.waited_s!=null?' +'+x.waited_s+'s':''}</td><td>${x.why||''}</td><td>${x.at||''}</td></tr>`).join(''):'<tr><td>No signals yet</td></tr>';
+ const tr=s.trades||[];document.getElementById('u2tr').innerHTML=tr.length?'<tr><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>Best</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.side}</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td>${fmt(t.best_lot)}</td><td class="${cls(t.pnl_lot)}">${fmt(t.pnl_lot)}</td></tr>`).join(''):'<tr><td>No U2 trades yet today</td></tr>';
+ document.getElementById('u2var').innerHTML='<tr><th>Variant</th><th>Trades</th><th>Wins</th><th>Total</th></tr>'+(s.variants||[]).map(v=>`<tr><td>${v.variant}${v.open?' •':''}</td><td>${v.trades}</td><td>${v.wins}</td><td class="${cls(v.total)}">${fmt(v.total)}</td></tr>`).join('');
+ document.getElementById('u2vs').innerHTML='<tr><th>Day</th><th>EC0</th><th>EC1</th><th>EC2</th><th>EC2+</th><th>U2</th></tr>'+(a.vs||[]).map(r=>`<tr><td>${r.day}</td>`+['EC0','EC1','EC2','EC2P','U2'].map(k=>`<td class="${cls(r[k])}">${fmt(r[k])}</td>`).join('')+'</tr>').join('');
+ const m=a.main||{};document.getElementById('u2all').textContent=`U2 MAIN all-time: ${m.trades||0} trades, ${fmt(m.total)} total, win ${m.win_rate??'—'}%`;
+}
+tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);
 </script></body></html>"""
 
 
@@ -169,6 +232,11 @@ class H(BaseHTTPRequestHandler):
             cur_tr = [t for t in tr if (t.get("version") or "v1") == cur]
             body = stats(cur_tr) | {"version": cur, "groups": grouped(tr), "challengers": challengers(cur_tr)}
             self._send(json.dumps(body).encode(), "application/json")
+        elif self.path == "/api/u2/state":
+            f = DATA_U2 / "state.json"
+            self._send(f.read_bytes() if f.exists() else b"{}", "application/json")
+        elif self.path == "/api/u2/stats":
+            self._send(json.dumps(u2_stats()).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
         else:
