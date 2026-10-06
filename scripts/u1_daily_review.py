@@ -28,6 +28,7 @@ DOCS, REVIEWS = ROOT / "docs" / "u1_daily", ROOT / "data" / "u1" / "reviews"
 MODELS = ("EC0", "EC1", "EC2", "EC2P")
 TIME_EXITS = {"time", "F no progress", "G max hold"}
 DATA_U2 = ROOT / "data" / "u2"
+DATA_U3 = ROOT / "data" / "u3"
 LABEL = {"EC0": "EC0", "EC1": "EC1", "EC2": "EC2", "EC2P": "EC2+"}
 HYP = {
     "H1": "Entry right after a burst candle → the option dips below the entry price within 5 min",
@@ -341,6 +342,7 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
         )
     head += missed_signals(signals, b)
     head += u2_section(day, trades, models)
+    head += u3_section(day)
     fac = factor_day(day)
     head += factor_md(fac)
     head.append("\n## Day summary (written per the skill)\n\n_TODO_\n")
@@ -420,6 +422,66 @@ def u2_section(day: date, u1_trades: pd.DataFrame, models: list[str]) -> list[st
     return out + q7_news(day, t)
 
 
+def u3_section(day: date) -> list[str]:
+    """U3 (research regime engine): regime of the day, MAIN trades per strategy, decisions, and the ablation grid."""
+    tf, df_, cf = DATA_U3 / f"{day}_trades.csv", DATA_U3 / f"{day}_decisions.csv", DATA_U3 / f"{day}_context.csv"
+    out = ["\n## U3 (research regime engine)\n"]
+    if not cf.exists():
+        return [*out, "_U3 did not run on this day._"]
+    c = pd.read_csv(cf)
+    t = pd.read_csv(tf) if tf.exists() and tf.stat().st_size > 2 else pd.DataFrame()
+    dec = pd.read_csv(df_) if df_.exists() and df_.stat().st_size > 2 else pd.DataFrame()
+    share = c.day_type.value_counts(normalize=True).mul(100).round().astype(int)
+    out.append("- **Day type (minutes, MAIN):** " + ", ".join(f"{k} {v}%" for k, v in share.items()))
+    g = c.gex_bn.dropna()
+    if len(g):
+        out.append(
+            f"- **Dealer gamma:** positive in {100 * (g > 0).mean():.0f}% of minutes "
+            f"(median {g.median():+.1f} bn); in-play: {'yes' if c.inplay.any() else 'no'}"
+        )
+    ibh, ibl = c.ib_high.dropna(), c.ib_low.dropna()
+    if len(ibh):
+        last = float(c.close.iloc[-1])
+        inside = ibl.iloc[-1] <= last <= ibh.iloc[-1]
+        out.append(
+            f"- **Opening range check:** IB {ibl.iloc[-1]:.0f}–{ibh.iloc[-1]:.0f}; the day closed "
+            f"{'inside (range-like)' if inside else 'outside (trend-like)'} at {last:.0f}"
+        )
+    if not dec.empty:
+        dm = dec[dec.variant == "MAIN"]
+        out.append(
+            "- **MAIN decisions:** "
+            + ", ".join(f"{s_} {d_} {n}" for (s_, d_), n in dm.groupby(["strat", "decision"]).size().items())
+            + "; skip reasons: "
+            + (", ".join(f"{k} {v}" for k, v in dm[dm.decision == "SKIP"].why.value_counts().items()) or "—")
+        )
+    if t.empty:
+        return [*out, "- **Trades:** none in any variant."]
+    out += ["\n| Variant | FADE ₹ | TREND ₹ | LAST ₹ | Total ₹ | Trades |", "|---|---|---|---|---|---|"]
+    for v, gv in t.groupby("variant", sort=False):
+        per = {
+            s_: gv[gv.strat == s_].pnl_lot.sum() if (gv.strat == s_).any() else None for s_ in ("FADE", "TREND", "LAST")
+        }
+        out.append(
+            f"| {v} | "
+            + " | ".join(fmt(per[k]) for k in ("FADE", "TREND", "LAST"))
+            + f" | **{fmt(gv.pnl_lot.sum())}** | {len(gv)} |"
+        )
+    main = t[t.variant == "MAIN"]
+    if len(main):
+        out += [
+            "\n| # | Strat | Side | Regime | Entry | Exit (why) | Expected / needed pts | Best ₹ | ₹ |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for k, (_, r) in enumerate(main.iterrows(), 1):
+            out.append(
+                f"| {k} | {r.strat} | {r.get('side', '')} | {r.get('regime', '')} | {r.entry} @ {r.entry_px} | "
+                f"{r.exit} ({r.reason}) | {r.get('expected_pts', '')} / {r.get('need_pts', '')} | "
+                f"{fmt(r.best_lot)} | **{fmt(r.pnl_lot)}** |"
+            )
+    return out
+
+
 def q7_news(day: date, t: pd.DataFrame) -> list[str]:
     """Q7: news and events. The morning card, MAIN vs NEWS, and MAIN's trades split by the logged news flags."""
     out = ["\n## Q7. News and events (U2)\n"]
@@ -439,8 +501,12 @@ def q7_news(day: date, t: pd.DataFrame) -> list[str]:
         out.append("- **MAIN vs NEWS:** " + "; ".join(f"{v} {n} trades {fmt(s_)}" for v, (n, s_) in tot.items()))
     main = t[t.variant == "MAIN"]
     out += ["\n| MAIN trades split by | Group | Trades | Total ₹ | Wins |", "|---|---|---|---|---|"]
-    for col, label in (("news_bias_with", "news bias"), ("news_gap_with", "gap direction"),
-                       ("news_event_window", "event window"), ("news_vix_guard", "VIX guard")):
+    for col, label in (
+        ("news_bias_with", "news bias"),
+        ("news_gap_with", "gap direction"),
+        ("news_event_window", "event window"),
+        ("news_vix_guard", "VIX guard"),
+    ):
         if col not in main.columns:
             continue
         g = main[col].fillna("").astype(str).replace({"": "outside" if col == "news_event_window" else "n/a"})

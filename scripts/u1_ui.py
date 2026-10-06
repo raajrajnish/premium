@@ -11,7 +11,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "u1"
-DATA_U2 = ROOT / "data" / "u2"          # U2 panel (additive; docs/U2_README.md)
+DATA_U2 = ROOT / "data" / "u2"
+DATA_U3 = ROOT / "data" / "u3"          # U3 panel (additive; docs/U3_README.md)          # U2 panel (additive; docs/U2_README.md)
 PORT = 8760
 
 
@@ -98,6 +99,25 @@ def u2_stats() -> dict[str, Any]:
     return {"main": stats(main), "variants": variants, "vs": vs}
 
 
+def u3_stats() -> dict[str, Any]:
+    """U3 all-time per variant × strategy, and per-day totals (MAIN) for U1/U2/U3 comparison."""
+    rows: list[dict[str, Any]] = []
+    for f in sorted(DATA_U3.glob("*_trades.csv")):
+        with f.open(encoding="utf-8") as fh:
+            rows += list(csv.DictReader(fh))
+    grid: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        g = grid.setdefault(r["variant"], {"variant": r["variant"], "total": 0, "trades": 0})
+        x = round(float(r["pnl_lot"]))
+        g[r["strat"]] = g.get(r["strat"], 0) + x
+        g["total"] += x
+        g["trades"] += 1
+    days = sorted({r["date"] for r in rows if r["variant"] == "MAIN"})
+    per_day = [{"day": d, "U3": round(sum(float(r["pnl_lot"]) for r in rows if r["variant"] == "MAIN" and r["date"] == d))}
+               for d in days]
+    return {"grid": list(grid.values()), "per_day": per_day}
+
+
 def _cum(p: list[float]) -> list[float]:
     out, s = [], 0.0
     for x in p:
@@ -156,6 +176,20 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
  <div class="card" style="margin-top:14px"><h2>U1 vs U2 by day (₹/lot)</h2><table id="u2vs"></table><div class="tag" id="u2all" style="margin-top:6px"></div></div>
 </div>
 </main>
+<header style="border-top:1px solid var(--line)"><h1>U3 · research regime engine</h1><span class="paper">PAPER ONLY</span>
+<span class="tag" id="u3meta">loading…</span></header>
+<main>
+<div>
+ <div class="card"><h2>Market regime now</h2><div id="u3ctx">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Decisions (MAIN)</h2><table id="u3dec"></table></div>
+ <div class="card" style="margin-top:14px"><h2>U3 trades today (MAIN)</h2><table id="u3tr"></table></div>
+</div>
+<div>
+ <div class="card"><h2>Strategies (MAIN)</h2><div id="u3status">—</div></div>
+ <div class="card" style="margin-top:14px"><h2>Which ideas help? MAIN vs "minus one" (all-time ₹/lot)</h2><table id="u3grid"></table>
+  <div class="tag" style="margin-top:6px">Each noX variant = MAIN with one idea switched off. If MAIN beats noX over enough days, idea X earns its place.</div></div>
+</div>
+
 <script>
 const fmt=v=>v==null?'—':(v>0?'+':'')+'₹'+Math.round(v).toLocaleString('en-IN');
 const cls=v=>v>0?'pos':v<0?'neg':'';
@@ -212,7 +246,19 @@ async function tick2(){
  document.getElementById('u2vs').innerHTML='<tr><th>Day</th><th>EC0</th><th>EC1</th><th>EC2</th><th>EC2+</th><th>U2</th></tr>'+(a.vs||[]).map(r=>`<tr><td>${r.day}</td>`+['EC0','EC1','EC2','EC2P','U2'].map(k=>`<td class="${cls(r[k])}">${fmt(r[k])}</td>`).join('')+'</tr>').join('');
  const m=a.main||{};document.getElementById('u2all').textContent=`U2 MAIN all-time: ${m.trades||0} trades, ${fmt(m.total)} total, win ${m.win_rate??'—'}%`;
 }
-tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);
+async function tick3(){
+ let s,a;try{[s,a]=await Promise.all([fetch('/api/u3/state').then(r=>r.json()),fetch('/api/u3/stats').then(r=>r.json())]);}catch(e){return;}
+ if(!s||!s.day){document.getElementById('u3meta').textContent='U3 watcher not running yet';return;}
+ const age=(Date.now()-new Date(s.updated).getTime())/1000;
+ document.getElementById('u3meta').innerHTML=`${s.day} · ${s.version} · feed ${s.feed_ts?.slice(11)} `+(age>90?'<span class="stale">· watcher not updating ('+Math.round(age)+'s)</span>':'· live');
+ const c=s.context||{};const dt=c.day_type||'—';
+ document.getElementById('u3ctx').innerHTML=`Day type: <b class="${dt.startsWith('TREND')?'pos':dt==='RANGE'?'':''}">${dt}</b> · zone ${c.zone||'—'} · in-play: <b>${c.inplay?'yes':'no'}</b><br>Dealer gamma: <b class="${(c.gex_bn||0)>0?'pos':'neg'}">${c.gex_bn??'—'} bn</b> (${(c.gex_bn||0)>0?'dampening → fades':'accelerating → trends'}) · walls: call ${c.call_wall??'—'} / put ${c.put_wall??'—'} · magnet ${c.magnet??'—'}<br>Order flow (OFI z): <b class="${(c.ofi_z||0)>0?'pos':(c.ofi_z||0)<0?'neg':''}">${c.ofi_z??'—'}</b> · swing ≈ ${c.swing_pts??'—'} pts<br>Opening range (09:15–10:15): ${s.ib?s.ib[1]+' – '+s.ib[0]:'forming'} · gap ${s.gap_pct!=null?s.gap_pct.toFixed(2)+'%':'—'} · opening volume ${s.openvol_x!=null?s.openvol_x.toFixed(2)+'× normal':'—'}${s.expiry_today?' · <span class="neg">expiry day</span>':''}`;
+ const st=s.status||{};document.getElementById('u3status').innerHTML=['FADE','TREND','LAST'].map(k=>{const x=st[k]||{};return `<div style="margin-bottom:6px"><b>${k}</b>: `+(x.mode==='in trade'?`${x.side} ${x.key.replace('NSE_','')} @ ${x.entry_px} (${x.entry}) · <b class="${cls(x.pnl_lot)}">${fmt(x.pnl_lot)}</b>`:`idle${x.blocked?' · <span class="neg">'+x.blocked+'</span>':''}`)+` · today ${x.trades||0} trades ${fmt(x.day_pnl)}</div>`;}).join('');
+ const dec=(s.decisions||[]).slice().reverse();document.getElementById('u3dec').innerHTML=dec.length?'<tr><th>Min</th><th>Strategy</th><th>Side</th><th>Regime</th><th>Decision</th></tr>'+dec.map(x=>`<tr><td>${x.min}</td><td>${x.strat}</td><td>${x.side||''}</td><td>${x.regime||''}</td><td class="${x.decision==='ENTER'?'pos':'neg'}">${x.decision}${x.why?': '+x.why:''}</td></tr>`).join(''):'<tr><td>No signals yet</td></tr>';
+ const tr=s.trades||[];document.getElementById('u3tr').innerHTML=tr.length?'<tr><th>Strat</th><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>Best</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.strat}</td><td>${t.side||''}</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td>${fmt(t.best_lot)}</td><td class="${cls(t.pnl_lot)}">${fmt(t.pnl_lot)}</td></tr>`).join(''):'<tr><td>No U3 trades yet today</td></tr>';
+ document.getElementById('u3grid').innerHTML='<tr><th>Variant</th><th>FADE</th><th>TREND</th><th>LAST</th><th>Total</th><th>Trades</th></tr>'+(a.grid||[]).map(g=>`<tr><td>${g.variant}</td>`+['FADE','TREND','LAST','total'].map(k=>`<td class="${cls(g[k])}">${g[k]!=null?fmt(g[k]):'—'}</td>`).join('')+`<td>${g.trades}</td></tr>`).join('');
+}
+tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);tick3();setInterval(tick3,5000);
 </script></body></html>"""
 
 
@@ -237,6 +283,11 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/u2/state":
             f = DATA_U2 / "state.json"
             self._send(f.read_bytes() if f.exists() else b"{}", "application/json")
+        elif self.path == "/api/u3/state":
+            f = DATA_U3 / "state.json"
+            self._send(f.read_bytes() if f.exists() else b"{}", "application/json")
+        elif self.path == "/api/u3/stats":
+            self._send(json.dumps(u3_stats()).encode(), "application/json")
         elif self.path == "/api/u2/stats":
             self._send(json.dumps(u2_stats()).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
