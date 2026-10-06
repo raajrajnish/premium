@@ -70,6 +70,8 @@ Basis: the owner's research note "Architecting Mechanical Alpha" (2026-10-06) an
 - `state.json`: for the dashboard.
 
 ## 7. Judgement and next phases
+**Everything still to build or refine is listed in `docs/U4_BACKLOG.md`** (what, why, dependencies, suggested order).
+
 - The daily review covers U4 (per strategy, per variant), and its features join the **live factor scorecard**.
 - **Next (Phase 4, separate approval):** a cross-engine judge, Deflated Sharpe Ratio and PBO over all variants of U1–U4.
 - **Later (Phase 3):** real Kelly sizing after ≥ 30 trades per strategy.
