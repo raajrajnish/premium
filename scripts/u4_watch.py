@@ -78,10 +78,15 @@ class Book:
 
 
 def past_trades(day: date) -> dict[str, list[float]]:
-    """Completed MAIN trades of previous live days, per strategy (for the logged Kelly estimate)."""
+    """Completed MAIN trades of previous live days (and full-quality replays of recorded days), per strategy,
+    for the logged Kelly estimate."""
     out: dict[str, list[float]] = {"FLOW": [], "SPREAD": []}
-    for f in sorted(core.OUT.glob("*_trades.csv")):
-        if f.name[:10] >= str(day):
+    live = {f.name[:10]: f for f in core.OUT.glob("*_trades.csv")}
+    # full-quality replays of recorded live days count too (README §4), but never alongside a live file for that day
+    rdir = core.OUT / "replay"
+    replays = {f.name[:10]: f for f in rdir.glob("*_trades.csv")} if rdir.exists() else {}
+    for d_, f in sorted((replays | live).items()):
+        if d_ >= str(day):
             continue
         with f.open(encoding="utf-8") as fh:
             for r in csv.DictReader(fh):

@@ -37,3 +37,23 @@
 Then the historical win rate and payoff become the **starting estimate** for U4's would-be Kelly. They are blended with live trades by weight of trade count, with history counted at **half weight** (because of the 1-min coarseness and estimated fills). Real sizing still needs the owner's approval.
 
 **Otherwise "leave it":** sizing waits for live trades only, and the result is recorded here.
+
+## Result (run 2026-10-07; script committed before the run as `f1de14d`): LEAVE IT
+
+| Period | Trades | Win % | Avg ₹ after costs | Avg ₹ before costs | Total ₹ | Payoff | PF | Worst day | Quarter-Kelly |
+|---|---|---|---|---|---|---|---|---|---|
+| All | 301 | 19% | −186 | −24 | −56,060 | 1.01 | 0.23 | −2,753 | −0.155 |
+| Jul | 106 | 23% | −155 | +7 | −16,443 | 1.18 | 0.34 | −2,031 | −0.108 |
+| Aug | 98 | 15% | −198 | −36 | −19,440 | 0.90 | 0.16 | −1,706 | −0.196 |
+| Sep | 97 | 18% | −208 | −46 | −20,177 | 0.83 | 0.18 | −2,753 | −0.203 |
+
+Exit reasons: Chandelier 234, loss cut 19, time 18, thesis break 15, target 15. About 4.8 trades/day over 63 days.
+
+**Reading:**
+1. **Fails every pre-declared condition** (negative after costs in all 3 months; PF 0.23). Under the rule, the history estimate is **not used** for U4 sizing.
+2. **The 1-min version is not the same strategy as live U4.**
+   - Here 234 of 301 trades exited on the Chandelier trail and only 15 reached fair value.
+   - In the full-quality replays of recorded live days (5–6 Oct: 16 trades, +₹1,211, 38% wins, payoff 2.9), 9 of 16 reached fair value and 2 hit the Chandelier.
+   - A 1-min candle's range (≈ 10–15 pts) is about the size of the 3σ trail, and the spread's 1–3 minute dislocations can't be resolved at 1-min steps.
+   - **History can neither confirm nor reject S-SPREAD as it runs live.**
+3. **Decision:** U4's would-be Kelly uses live trades plus full-quality replays of recorded live days only. S-SPREAD is judged live.

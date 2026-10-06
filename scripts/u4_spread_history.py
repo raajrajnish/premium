@@ -2,7 +2,7 @@
 Usage: uv run python scripts/u4_spread_history.py"""
 
 import math
-from datetime import date, time, timedelta
+from datetime import time, timedelta
 
 import duckdb
 import numpy as np
@@ -42,7 +42,8 @@ def zs_hl(spread: pd.Series) -> tuple[pd.Series, pd.Series]:
 
 def main() -> None:
     N = load("NSE-NIFTY")
-    H = {k: load(s)["close"] for k, s in (("bn", "NSE-BANKNIFTY"), ("hdfc", "NSE-HDFCBANK"), ("icici", "NSE-ICICIBANK"))}
+    syms = (("bn", "NSE-BANKNIFTY"), ("hdfc", "NSE-HDFCBANK"), ("icici", "NSE-ICICIBANK"))
+    H = {k: load(s)["close"] for k, s in syms}
     trades = []
     for day, b in N.groupby(N.index.date):
         b = b[(b.index.time >= time(9, 15)) & (b.index.time <= time(15, 29))].copy()
@@ -92,7 +93,7 @@ def main() -> None:
                 if j >= len(idx):
                     break
                 tt = idx[j]
-                hi, lo, cl = b.high.iloc[j], b.low.iloc[j], b.close.iloc[j]
+                hi, lo = b.high.iloc[j], b.low.iloc[j]
                 adverse = (e_spot - lo) if d > 0 else (hi - e_spot)
                 if tt.time() >= hard:
                     px, why = o.close.iloc[k], "hard"
@@ -139,7 +140,8 @@ def main() -> None:
         w, lo = g[g.pnl > 0].pnl, -g[g.pnl <= 0].pnl
         payoff = (w.mean() / lo.mean()) if len(w) and len(lo) else float("nan")
         p = len(w) / len(g)
-        return {"trades": len(g), "win%": round(100 * p), "avg ₹": round(g.pnl.mean()), "avg gross ₹": round(g.gross.mean()),
+        return {"trades": len(g), "win%": round(100 * p), "avg ₹": round(g.pnl.mean()),
+                "avg gross ₹": round(g.gross.mean()),
                 "total ₹": round(g.pnl.sum()), "payoff": round(payoff, 2),
                 "PF": round(w.sum() / lo.sum(), 2) if lo.sum() > 0 else None,
                 "worst day ₹": round(g.groupby("day").pnl.sum().min()),

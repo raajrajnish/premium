@@ -52,7 +52,7 @@ Basis: the owner's research note "Architecting Mechanical Alpha" (2026-10-06) an
 - **Fills:** 1 lot (65) of the ATM option (nearest expiry), bought at the **ask**, sold at the **bid** (last price ± ₹0.5 without a fresh quote). Charges ₹1.5/unit. **Slippage logged:** the fill vs the option's micro-price at that moment.
 - **Safety:** option −25% → exit; no live price for 60 s → exit at the last bid; hard exit 15:10 (14:45 on expiry day).
 - **Risk, per strategy:** daily loss cap −₹2,000/lot; max 8 trades/day; 3 losses in a row → 30-min pause.
-- **Sizing (Phase 3, logged only in v0.1):** quarter-Kelly f = 0.25 × (p − (1 − p) ÷ payoff), from that strategy's completed live trades, × a volatility target (today's σ1m vs its median). Shown as "would-be lots" (1–3). **Real sizing switches on only after ≥ 30 trades per strategy, with the owner's approval.**
+- **Sizing (Phase 3, logged only in v0.1):** quarter-Kelly f = 0.25 × (p − (1 − p) ÷ payoff), from that strategy's completed live trades, × a volatility target (today's σ1m vs its median). Shown as "would-be lots" (1–3). *The estimate uses live trades plus **full-quality replays of recorded live days** (same rules, same data; `data/u4/replay/`). It does **not** use 1-minute history: the 2026-10-07 study found that 1-min candles are too coarse to reproduce S-SPREAD (see `docs/studies/2026-10-07_U4_spread_history.md`).* **Real sizing switches on only after ≥ 30 trades per strategy, with the owner's approval.**
 
 ## 5. Variants (independent paper engines on the same feed)
 
