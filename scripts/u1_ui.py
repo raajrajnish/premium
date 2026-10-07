@@ -161,6 +161,7 @@ td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left} th{co
 .chk{display:grid;grid-template-columns:1fr 1fr;gap:10px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 .y{background:var(--ok)}.n{background:#3a3f4b} #chart{height:380px} .stale{color:var(--warn)}
 </style></head><body>
+<div id="feedalarm" style="display:none;background:#7f1d1d;color:#fff;padding:10px 18px;font-weight:600"></div>
 <header><h1>U1 · multi-confirmation setup</h1><span class="paper">PAPER ONLY</span>
 <span class="tag" id="meta">loading…</span></header>
 <main>
@@ -290,7 +291,18 @@ async function tick3(){
  const tr=s.trades||[];document.getElementById('u3tr').innerHTML=tr.length?'<tr><th>Strat</th><th>Side</th><th>Entry</th><th>Exit</th><th>Why</th><th>Best</th><th>₹/lot</th></tr>'+tr.map(t=>`<tr><td>${t.strat}</td><td>${t.side||''}</td><td>${t.entry} @ ${t.entry_px}</td><td>${t.exit} @ ${t.exit_px}</td><td>${t.reason}</td><td>${fmt(t.best_lot)}</td><td class="${cls(t.pnl_lot)}">${fmt(t.pnl_lot)}</td></tr>`).join(''):'<tr><td>No U3 trades yet today</td></tr>';
  document.getElementById('u3grid').innerHTML='<tr><th>Variant</th><th>FADE</th><th>TREND</th><th>LAST</th><th>Total</th><th>Trades</th></tr>'+(a.grid||[]).map(g=>`<tr><td>${g.variant}</td>`+['FADE','TREND','LAST','total'].map(k=>`<td class="${cls(g[k])}">${g[k]!=null?fmt(g[k]):'—'}</td>`).join('')+`<td>${g.trades}</td></tr>`).join('');
 }
-tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);tick3();setInterval(tick3,5000);
+async function feedCheck(){
+ // Live-feed alarm (2026-10-07): during market hours, warn if any engine's last live price is > 60 s old.
+ const now=new Date(),hm=now.getHours()*60+now.getMinutes(),mkt=now.getDay()>=1&&now.getDay()<=5&&hm>=555&&hm<930;
+ const el=document.getElementById('feedalarm');if(!mkt){el.style.display='none';return;}
+ const names=['U1','U2','U3','U4'],urls=['/api/state','/api/u2/state','/api/u3/state','/api/u4/state'];
+ const res=await Promise.all(urls.map(u=>fetch(u).then(r=>r.json()).catch(()=>({}))));
+ const stale=[];res.forEach((s,i)=>{const t=s&&s.feed_ts?new Date(s.feed_ts):null;const age=t?(now-t)/1000:null;
+  const today=s&&s.day===now.toISOString().slice(0,10);if(!t||!today||age>60)stale.push(`${names[i]} ${t?'last price '+s.feed_ts.slice(11,19)+' ('+Math.round(age)+'s ago)':'no data today'}`);});
+ el.style.display=stale.length?'block':'none';
+ el.textContent=stale.length?'⚠ LIVE FEED STOPPED / STALE: '+stale.join(' · ')+'. Check the recorder (Nifty system) and the premium watcher windows.':'';
+}
+tick();setInterval(tick,5000);tick2();setInterval(tick2,5000);feedCheck();setInterval(feedCheck,10000);tick3();setInterval(tick3,5000);
 async function tick4(){
  let s,a;try{[s,a]=await Promise.all([fetch('/api/u4/state').then(r=>r.json()),fetch('/api/u4/stats').then(r=>r.json())]);}catch(e){return;}
  if(!s||!s.day){document.getElementById('u4meta').textContent='U4 watcher not running yet';return;}
