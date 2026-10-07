@@ -345,6 +345,7 @@ def review(day: date) -> tuple[str, dict[str, Any]]:
     head += u2_section(day, trades, models)
     head += u3_section(day)
     head += u4_section(day)
+    head += condition_md(day)
     fac = factor_day(day)
     head += factor_md(fac)
     head.append("\n## Day summary (written per the skill)\n\n_TODO_\n")
@@ -751,6 +752,161 @@ def scoreboard() -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------- condition × engine table (owner, 2026-10-07)
+ENGINE_ORDER = [
+    "U1-EC0",
+    "U1-EC1",
+    "U1-EC2",
+    "U1-EC2+",
+    "U2-MAIN",
+    "U2-NEWS",
+    "U3-FADE",
+    "U3-TREND",
+    "U3-LAST",
+    "U4-FLOW",
+    "U4-SPREAD",
+]
+COND_ORDER = ["day type", "dealer gamma", "in-play", "event", "gap", "zone", "option price"]
+
+
+def _hm(x: str) -> str:
+    return str(x)[:5]
+
+
+def condition_rows(day: date) -> pd.DataFrame:
+    """Every trade of every engine for the day, tagged with the market conditions at its entry minute."""
+    rows: list[dict[str, Any]] = []
+    u1 = u.OUT / f"{day}_trades.csv"
+    if u1.exists() and u1.stat().st_size > 2:
+        t = pd.read_csv(u1)
+        for _, r in t.iterrows():
+            for m in MODELS:
+                col = f"{m}_pnl" if f"{m}_pnl" in t.columns else ("pnl_lot" if m == "EC0" else None)
+                if col and r.get(col) == r.get(col) and r.get(col) is not None:
+                    rows.append(
+                        {
+                            "engine": f"U1-{LABEL[m]}",
+                            "entry": _hm(r.entry),
+                            "entry_px": r.entry_px,
+                            "pnl": float(r[col]),
+                        }
+                    )
+    for eng, f, keep in (("U2", DATA_U2, ("MAIN", "NEWS")), ("U3", DATA_U3, ("MAIN",)), ("U4", DATA_U4, ("MAIN",))):
+        tf = f / f"{day}_trades.csv"
+        if not tf.exists() or tf.stat().st_size <= 2:
+            continue
+        t = pd.read_csv(tf)
+        for _, r in t[t.variant.isin(keep)].iterrows():
+            name = f"U2-{r.variant}" if eng == "U2" else f"{eng}-{r.strat}"
+            rows.append({"engine": name, "entry": _hm(r.entry), "entry_px": r.entry_px, "pnl": float(r.pnl_lot)})
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    ctx_f = DATA_U3 / f"{day}_context.csv"
+    ctx = pd.read_csv(ctx_f).set_index("min") if ctx_f.exists() and ctx_f.stat().st_size > 2 else pd.DataFrame()
+    card_f = DATA_U2 / f"{day}_morning.json"
+    card = json.loads(card_f.read_text(encoding="utf-8")) if card_f.exists() else {}
+    wins = [(w["from"], w["to"]) for w in card.get("event_windows", [])]
+    feed = u2c.Feed(day)
+    feed.update()
+    open_px = next(
+        (float(i["NSE_NIFTY"]) for ts, i, _ in feed.ltp if ts.time() >= datetime.strptime("09:15", "%H:%M").time()),
+        None,
+    )
+    pc = card.get("prev_close")
+    gap = (open_px / pc - 1) * 100 if (open_px and pc) else None
+
+    def cond(r: pd.Series) -> dict[str, str]:
+        hm = r.entry
+        prev = [k for k in ctx.index if k <= hm] if len(ctx) else []
+        c = ctx.loc[prev[-1]] if prev else None
+        g = None if c is None else c.get("gex_bn")
+        in_win = any(a <= hm <= b for a, b in wins)
+        return {
+            "day type": "unknown" if c is None else str(c.day_type),
+            "dealer gamma": "unknown" if g is None or g != g else ("positive" if g > 0 else "negative"),
+            "in-play": "unknown" if c is None else ("yes" if bool(c.inplay) else "no"),
+            "event": "inside window" if in_win else ("event day" if card.get("event_risk") == "high" else "normal"),
+            "gap": "unknown" if gap is None else ("large (≥0.5%)" if abs(gap) >= 0.5 else "small"),
+            "zone": cx3_zone(hm),
+            "option price": "≤ ₹80" if r.entry_px <= 80 else ("₹80–150" if r.entry_px <= 150 else "> ₹150"),
+        }
+
+    tags = pd.DataFrame([cond(r) for _, r in df.iterrows()])
+    out = pd.concat([df.reset_index(drop=True), tags], axis=1)
+    out.insert(0, "day", str(day))
+    return out
+
+
+def cx3_zone(hm: str) -> str:
+    if hm < "10:15":
+        return "OPEN"
+    if hm < "11:30":
+        return "MID"
+    if hm < "13:30":
+        return "LULL"
+    if hm < "14:45":
+        return "LATE"
+    return "CLOSE"
+
+
+def _matrix(df: pd.DataFrame) -> list[str]:
+    engines = [e for e in ENGINE_ORDER if e in set(df.engine)]
+    out = ["| Condition | Value | " + " | ".join(engines) + " |", "|---|---|" + "---|" * len(engines)]
+    for c in COND_ORDER:
+        for v in sorted(df[c].unique()):
+            cells = []
+            for e in engines:
+                g = df[(df[c] == v) & (df.engine == e)]
+                cells.append("" if g.empty else f"{len(g)} · {g.pnl.sum():+,.0f}")
+            out.append(f"| {c} | {v} | " + " | ".join(cells) + " |")
+    return out
+
+
+def condition_md(day: date) -> list[str]:
+    df = condition_rows(day)
+    out = [
+        "\n## Condition × engine (today)\n",
+        "*Each cell: trades · total ₹/lot, for trades whose entry happened in that condition. Conditions come "
+        "from U3's live gauge and U2's morning card. One day = evidence for one or two day types only.*\n",
+    ]
+    if df.empty:
+        return [*out, "_No trades today._"]
+    REVIEWS.mkdir(parents=True, exist_ok=True)
+    df.to_csv(REVIEWS / f"{day}_conditions.csv", index=False)
+    return out + _matrix(df)
+
+
+def condition_matrix() -> str:
+    """All reviewed days: the running condition × engine table (input for U5)."""
+    files = sorted(REVIEWS.glob("*_conditions.csv"))
+    if not files:
+        return "# Condition × engine table\n\n_No reviewed days yet._\n"
+    df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    days = sorted(df.day.unique())
+    lines = [
+        "# Condition × engine table (auto-generated by `scripts/u1_daily_review.py`)\n",
+        f"Days: {len(days)} ({', '.join(days)}). Each cell: trades · total ₹/lot · average ₹/trade.\n",
+        "**Purpose:** find which engine works in which market condition, as input for U5 (the conductor). "
+        "A cell becomes evidence only with ≥ 15 trades over ≥ 3 different days; until then, treat it as anecdote.\n",
+    ]
+    engines = [e for e in ENGINE_ORDER if e in set(df.engine)]
+    lines += ["| Condition | Value | " + " | ".join(engines) + " |", "|---|---|" + "---|" * len(engines)]
+    for c in COND_ORDER:
+        for v in sorted(df[c].unique()):
+            cells = []
+            for e in engines:
+                g = df[(df[c] == v) & (df.engine == e)]
+                if g.empty:
+                    cells.append("")
+                else:
+                    flag = " ✔" if (len(g) >= 15 and g.day.nunique() >= 3) else ""
+                    cells.append(f"{len(g)} · {g.pnl.sum():+,.0f} · {g.pnl.mean():+,.0f}{flag}")
+            lines.append(f"| {c} | {v} | " + " | ".join(cells) + " |")
+    lines.append("\n✔ = enough evidence (≥ 15 trades, ≥ 3 days).")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", default=str(date.today()))
@@ -765,6 +921,7 @@ def main() -> None:
     (REVIEWS / f"{day}.json").write_text(json.dumps(js, indent=1, default=str), encoding="utf-8")
     (ROOT / "docs" / "U1_HYPOTHESES.md").write_text(scoreboard(), encoding="utf-8")
     (ROOT / "docs" / "U2_FACTOR_SCORECARD.md").write_text(factor_scorecard(), encoding="utf-8")
+    (ROOT / "docs" / "CONDITION_MATRIX.md").write_text(condition_matrix(), encoding="utf-8")
     print(f"review: {out}\njson: {REVIEWS / f'{day}.json'}\nscoreboard: {ROOT / 'docs' / 'U1_HYPOTHESES.md'}")
     print(f"trades reviewed: {len(js['trades'])}; narratives to write: {js['pending_narratives']}")
 
