@@ -108,7 +108,7 @@ P&L = (bid − entry fill − ₹1.5 charges) × 65. "In profit" = P&L > 0.
 
 **Morning context card** (`scripts/u2_morning.py` → `data/u2/<day>_morning.json`). Built once in the background when the U2 watcher starts, then frozen for the day:
 - **Events:** today's entries in the Nifty system's `config/event_calendar.yaml` (read-only) and premium's own `config/u2_events.yaml` (owner-maintained; put the time as "HH:MM IST"). Yesterday's US events marked "next session" are listed as overnight events.
-- **Gap:** yesterday's close (from the recorder) vs today's first price at or after 09:15.
+- **Gap:** yesterday's close vs today's first price at or after 09:15. **Yesterday's close (fix, 2026-10-08):** taken from yesterday's recording **only if it reached the close** (a price at or after 15:29); otherwise from Groww 1-minute candles (read-only), then Yahoo's daily close. If none is available, it is 'unknown' and no gap-based in-play is set. The source is stored in the card as `prev_close_source`. *(On 2026-10-08 the 12:07 price of an incomplete 7 Oct recording was used by mistake; that day's card was corrected.)*
 - **News read:** ONE headless Claude Code call (WebSearch only, owner's subscription, no API key) giving:
   - the news bias (positive / negative / mixed / unknown) and its confidence;
   - up to 5 headlines;

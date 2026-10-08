@@ -75,13 +75,11 @@ def calendar_events(day: date) -> list[dict[str, Any]]:
     return out
 
 
-def prev_close(day: date) -> tuple[str | None, float | None]:
-    days = sorted(p.name[5:] for p in RAW.glob("date=*") if p.name[5:] < str(day))
-    for d in reversed(days):
-        f = RAW / f"date={d}" / "ltp.jsonl"
-        if not f.exists():
-            continue
-        last = None
+def _recorded_close(d: str) -> tuple[float | None, str | None]:
+    """Last Nifty price at/before 15:30 in a recorded day, and the time of that price."""
+    f = RAW / f"date={d}" / "ltp.jsonl"
+    last, at = None, None
+    if f.exists():
         with f.open(encoding="utf-8") as fh:
             for line in fh:
                 try:
@@ -90,10 +88,67 @@ def prev_close(day: date) -> tuple[str | None, float | None]:
                     continue
                 n = (j.get("index") or {}).get("NSE_NIFTY")
                 if n and j["recv_ts"][11:16] <= "15:30":
-                    last = float(n)
-        if last:
-            return d, last
-    return None, None
+                    last, at = float(n), j["recv_ts"][11:19]
+    return last, at
+
+
+def _groww_close(d: str) -> float | None:
+    """Last 1-minute Nifty close of day d from Groww (read-only; token from env or the Nifty system's .env)."""
+    try:
+        from dotenv import dotenv_values
+        from growwapi import GrowwAPI
+    except ImportError:
+        return None
+    tok = os.environ.get("GROWW_ACCESS_TOKEN") or dotenv_values(ROOT.parent / "suzlon" / ".env").get(
+        "GROWW_ACCESS_TOKEN")
+    if not tok:
+        return None
+    try:
+        g = GrowwAPI(str(tok))
+        r = g.get_historical_candles(exchange=g.EXCHANGE_NSE, segment=g.SEGMENT_CASH, groww_symbol="NSE-NIFTY",
+                                     start_time=f"{d} 15:00:00", end_time=f"{d} 15:30:00", candle_interval="1minute",
+                                     timeout=30)
+        c = (r or {}).get("candles") or []
+        return float(c[-1][4]) if c else None
+    except Exception:  # any API problem → next source
+        return None
+
+
+def _yahoo_close(d: str) -> float | None:
+    """Daily close of ^NSEI for day d from Yahoo's public chart API."""
+    import urllib.request
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?range=1mo&interval=1d"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310 (fixed https URL)
+            j = json.load(r)["chart"]["result"][0]
+        for ts, cl in zip(j["timestamp"], j["indicators"]["quote"][0]["close"], strict=False):
+            if cl and (datetime.utcfromtimestamp(ts) + timedelta(hours=5, minutes=30)).date().isoformat() == d:
+                return float(cl)
+    except Exception:  # network / format problem → unknown
+        return None
+    return None
+
+
+def prev_close(day: date) -> tuple[str | None, float | None, str]:
+    """Previous trading day's close, from the most reliable available source (2026-10-08 fix):
+    1) that day's recording, ONLY if it reached the close (a price at/after 15:29);
+    2) Groww 1-minute candles; 3) Yahoo daily close; 4) unknown (then no gap-based in-play).
+    On 2026-10-07 the recording stopped at 12:07, and its 12:07 price was wrongly used as the close."""
+    days = sorted(p.name[5:] for p in RAW.glob("date=*") if p.name[5:] < str(day))
+    if not days:
+        return None, None, "unknown"
+    d = days[-1]
+    last, at = _recorded_close(d)
+    if last is not None and at is not None and at >= "15:29":
+        return d, last, "recording"
+    g = _groww_close(d)
+    if g is not None:
+        return d, g, "groww 1-minute"
+    y = _yahoo_close(d)
+    if y is not None:
+        return d, y, "yahoo daily"
+    return d, None, f"unknown (recording ended {at or 'n/a'})"
 
 
 def ask_llm(day: date, events: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
@@ -130,7 +185,7 @@ def ask_llm(day: date, events: list[dict[str, Any]]) -> tuple[dict[str, Any] | N
 
 def build(day: date, use_llm: bool = True) -> dict[str, Any]:
     events = calendar_events(day)
-    pday, pclose = prev_close(day)
+    pday, pclose, psource = prev_close(day)
     llm, err = ask_llm(day, events) if use_llm else (None, "LLM not requested")
     windows = []
     llm_events = [dict(x, source="llm", verified=False, kind="today") for x in (llm or {}).get("events_today", [])]
@@ -146,7 +201,8 @@ def build(day: date, use_llm: bool = True) -> dict[str, Any]:
     if windows and risk == "none":
         risk = "medium"
     return {"day": str(day), "built_at": datetime.now().isoformat(timespec="seconds"),
-            "prev_day": pday, "prev_close": pclose, "calendar_events": events, "event_windows": windows,
+            "prev_day": pday, "prev_close": pclose, "prev_close_source": psource, "calendar_events": events,
+            "event_windows": windows,
             "event_risk": risk, "bias": (llm or {}).get("bias", "unknown"),
             "confidence": (llm or {}).get("confidence"), "headlines": (llm or {}).get("headlines", []),
             "global_cues": (llm or {}).get("global_cues", {}), "summary": (llm or {}).get("summary", ""),
